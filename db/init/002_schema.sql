@@ -24,9 +24,17 @@ CREATE TABLE IF NOT EXISTS app_area_dimension (
 -- 2) 区域指标表：问答主查询表（犯罪/娱乐/交通/租金/便利）
 -- 作用：Agent 回答“这个区犯罪多少、娱乐多不多、交通如何”时直接查询本表。
 -- 注意：娱乐/便利总量来自后面的分类明细表聚合，分类展示时不要只依赖本表。
+--
+-- metric_date 写入约定（重要）：
+--   所有同步任务统一写入 metric_date = CURRENT_DATE（系统聚合快照日期），
+--   每个 sync job 只 ON CONFLICT 更新自己的指标列，其余列保持原值不被覆盖。
+--   每个指标的真实数据窗口（例如 NYPD 数据集只到 2024-12-31）必须写入
+--   source_snapshot.<metric_name>.window_end 等字段，禁止丢弃真实窗口信息。
+--   前端和 Domain Agent 默认查 v_area_metrics_latest，回答用户时遇到滞后
+--   数据应从 source_snapshot.<metric>.window_end 读取真实窗口并显式说明。
 CREATE TABLE IF NOT EXISTS app_area_metrics_daily (
   area_id TEXT NOT NULL REFERENCES app_area_dimension(area_id), -- 地区ID（外键）
-  metric_date DATE NOT NULL,                                    -- 指标统计日期（这一天对应的快照）
+  metric_date DATE NOT NULL,                                    -- 系统聚合快照日期（统一 CURRENT_DATE）
   crime_count_30d INTEGER NOT NULL DEFAULT 0,                   -- 近30天犯罪事件数量
   crime_index_100 NUMERIC(6,2) NULL,                            -- 犯罪强度指数（0-100，值越高表示风险越高）
   entertainment_poi_count INTEGER NOT NULL DEFAULT 0,           -- 娱乐设施点位数量（酒吧/影院/夜生活等）
@@ -34,7 +42,7 @@ CREATE TABLE IF NOT EXISTS app_area_metrics_daily (
   transit_station_count INTEGER NOT NULL DEFAULT 0,             -- 交通站点数量（地铁站等）
   complaint_noise_30d INTEGER NOT NULL DEFAULT 0,               -- 近30天噪音相关311投诉数量
   rent_index_value NUMERIC(10,2) NULL,                          -- 租金指数或租金基线值（用于租金对比）
-  source_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,           -- 数据来源快照（每个指标的 source/timestamp）
+  source_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,           -- 每指标来源/窗口元信息（jsonb merge 保留多源）
   updated_at TIMESTAMP NOT NULL DEFAULT NOW(),                  -- 本行最后更新时间
   PRIMARY KEY (area_id, metric_date)
 );
@@ -357,3 +365,24 @@ CREATE INDEX IF NOT EXISTS idx_transit_stop_mode
 
 CREATE INDEX IF NOT EXISTS idx_data_sync_job_name_started
   ON app_data_sync_job_log (job_name, started_at DESC);
+
+-- 区域指标最新视图：默认查询入口。前端和 Domain Agent 应该查这个视图，
+-- 不要直接查 app_area_metrics_daily。视图返回每个 area 最新一行
+-- （metric_date DESC），所有指标已通过 ON CONFLICT 合并到同一行。
+-- 当 source_snapshot.<metric>.window_end 早于 metric_date 时，回答用户必须
+-- 显式说明该指标的真实窗口（例如 “犯罪数据更新到 2024-12-31”）。
+CREATE OR REPLACE VIEW v_area_metrics_latest AS
+SELECT DISTINCT ON (m.area_id)
+  m.area_id,
+  m.metric_date,
+  m.crime_count_30d,
+  m.crime_index_100,
+  m.entertainment_poi_count,
+  m.convenience_facility_count,
+  m.transit_station_count,
+  m.complaint_noise_30d,
+  m.rent_index_value,
+  m.source_snapshot,
+  m.updated_at
+FROM app_area_metrics_daily m
+ORDER BY m.area_id, m.metric_date DESC;

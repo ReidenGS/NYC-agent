@@ -15,9 +15,13 @@ Spatial assignment is done in-DB during INSERT via a CTE that picks the
 NTA polygon containing the point. Rows that fall outside every NTA are
 skipped (we cannot violate the FK on area_id).
 
-Aggregation step writes `crime_count_30d` into app_area_metrics_daily,
-keyed by the latest occurred_date in the snapshot (so the metric is
-meaningful even if the public dataset lags by months).
+Aggregation step writes `crime_count_30d` into app_area_metrics_daily.
+Per the metric_date convention in docs/NYC_Agent_Data_Sources_API_SQL.md
+§6 (table 2), every metric job upserts on (area_id, CURRENT_DATE) so a
+single row holds all metrics. The real window end (= MAX(occurred_date)
+of the snapshot, e.g. 2024-12-31 when the public dataset lags) is kept
+in source_snapshot.crime_count_30d.window_end so agents can disclose
+the lag in user-facing answers.
 """
 from __future__ import annotations
 
@@ -94,7 +98,7 @@ AGGREGATE_SQL = text(
     upserted AS (
         INSERT INTO app_area_metrics_daily
             (area_id, metric_date, crime_count_30d, source_snapshot, updated_at)
-        SELECT counts.area_id, ref.max_date, counts.crime_count,
+        SELECT counts.area_id, CURRENT_DATE, counts.crime_count,
                jsonb_build_object('crime_count_30d',
                    jsonb_build_object('source', 'nypd_complaint_data',
                                       'window_end', ref.max_date,

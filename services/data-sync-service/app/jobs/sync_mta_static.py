@@ -10,7 +10,12 @@ Field mapping (docs/NYC_Agent_Data_Sources_API_SQL.md §5.5 + §6 table 11):
   borough/structure -> kept in source_snapshot
 
 Aggregation: counts subway stops per NTA via ST_Contains and writes
-transit_station_count into app_area_metrics_daily for metric_date=today.
+transit_station_count into app_area_metrics_daily.
+
+Per the metric_date convention (docs/NYC_Agent_Data_Sources_API_SQL.md
+§6 table 2), the row is keyed on (area_id, CURRENT_DATE) and
+source_snapshot.transit_station_count.window_end records the actual
+snapshot date.
 """
 from __future__ import annotations
 
@@ -69,7 +74,7 @@ AGGREGATE_SQL = text(
            jsonb_build_object('transit_station_count',
                jsonb_build_object('source', 'mta_subway_stations',
                                   'mode', 'subway',
-                                  'snapshot_date', CURRENT_DATE)),
+                                  'window_end', CURRENT_DATE)),
            NOW()
     FROM counts
     ON CONFLICT (area_id, metric_date) DO UPDATE SET

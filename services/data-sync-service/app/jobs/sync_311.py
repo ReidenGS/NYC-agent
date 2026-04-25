@@ -10,6 +10,11 @@ Field mapping (docs/NYC_Agent_Data_Sources_API_SQL.md §5.2 + §6 table 2):
 311 has no dedicated snapshot table per design §8 — only aggregation
 to app_area_metrics_daily.complaint_noise_30d. We stream rows into a
 TEMP table and do spatial assignment + counting entirely in PostGIS.
+
+Per the metric_date convention (docs/NYC_Agent_Data_Sources_API_SQL.md
+§6 table 2), the row is keyed on (area_id, CURRENT_DATE). The real
+30-day window end (MAX(created_date::date) of the staged batch) is
+preserved in source_snapshot.complaint_noise_30d.window_end.
 """
 from __future__ import annotations
 
@@ -67,7 +72,7 @@ AGGREGATE_SQL = text(
     upserted AS (
         INSERT INTO app_area_metrics_daily
             (area_id, metric_date, complaint_noise_30d, source_snapshot, updated_at)
-        SELECT counts.area_id, ref.max_date, counts.n,
+        SELECT counts.area_id, CURRENT_DATE, counts.n,
                jsonb_build_object('complaint_noise_30d',
                    jsonb_build_object('source', '311_service_requests',
                                       'dataset', 'erm2-nwe9',
