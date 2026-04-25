@@ -9,8 +9,7 @@ Field mapping (docs/NYC_Agent_Data_Sources_API_SQL.md §5.5 + §6 table 11):
   daytime_routes    -> kept in source_snapshot (no dedicated column)
   borough/structure -> kept in source_snapshot
 
-Aggregation: counts subway stops per NTA via ST_Contains and writes
-transit_station_count into app_area_metrics_daily.
+Aggregation: refreshes transit_station_count across subway + bus stops.
 
 Per the metric_date convention (docs/NYC_Agent_Data_Sources_API_SQL.md
 §6 table 2), the row is keyed on (area_id, CURRENT_DATE) and
@@ -27,6 +26,7 @@ from sqlalchemy import text
 
 from app.clients import socrata_client
 from app.db.session import db_session
+from app.jobs._transit_metrics_refresh import refresh_transit_station_count
 from app.jobs.base import JobResult, job_run
 
 logger = logging.getLogger(__name__)
@@ -53,35 +53,6 @@ UPSERT_SQL = text(
         geom       = EXCLUDED.geom,
         source     = EXCLUDED.source,
         updated_at = NOW()
-    """
-)
-
-
-AGGREGATE_SQL = text(
-    """
-    WITH counts AS (
-        SELECT a.area_id, COUNT(s.*) AS n
-        FROM app_area_dimension a
-        LEFT JOIN app_transit_stop_dimension s
-          ON s.geom IS NOT NULL
-         AND s.mode = 'subway'
-         AND ST_Contains(a.geom, s.geom)
-        GROUP BY a.area_id
-    )
-    INSERT INTO app_area_metrics_daily
-        (area_id, metric_date, transit_station_count, source_snapshot, updated_at)
-    SELECT area_id, CURRENT_DATE, n,
-           jsonb_build_object('transit_station_count',
-               jsonb_build_object('source', 'mta_subway_stations',
-                                  'mode', 'subway',
-                                  'window_end', CURRENT_DATE)),
-           NOW()
-    FROM counts
-    ON CONFLICT (area_id, metric_date) DO UPDATE SET
-        transit_station_count = EXCLUDED.transit_station_count,
-        source_snapshot       = app_area_metrics_daily.source_snapshot
-                                 || EXCLUDED.source_snapshot,
-        updated_at            = NOW()
     """
 )
 
@@ -132,7 +103,7 @@ def run(trigger_type: str = "manual") -> JobResult:
             session.commit()
 
         with db_session() as session:
-            session.execute(AGGREGATE_SQL)
+            refresh_transit_station_count(session)
 
         ctx.rows_fetched = seen
         ctx.rows_written = written

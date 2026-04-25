@@ -58,10 +58,31 @@ services:
       OVERPASS_MAX_REQUESTS_PER_RUN: ${OVERPASS_MAX_REQUESTS_PER_RUN:-10}
       OVERPASS_SLEEP_SECONDS: ${OVERPASS_SLEEP_SECONDS:-3}
       MAP_LAYER_PREGENERATE_FOR_SEED: ${MAP_LAYER_PREGENERATE_FOR_SEED:-true}
+      MTA_BUS_STATIC_FEED_URLS: ${MTA_BUS_STATIC_FEED_URLS:-}
     ports:
       - "${DATA_SYNC_PORT:-8030}:8030"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8030/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+
+  api-gateway:
+    build:
+      context: ./backend/api-gateway
+    container_name: nyc_agent_api_gateway
+    restart: unless-stopped
+    depends_on:
+      data-sync-service:
+        condition: service_healthy
+    environment:
+      DATA_SYNC_BASE_URL: ${DATA_SYNC_BASE_URL_DOCKER:-http://data-sync-service:8030}
+      CORS_ORIGINS: ${API_GATEWAY_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+    ports:
+      - "${API_GATEWAY_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
       interval: 10s
       timeout: 5s
       retries: 5

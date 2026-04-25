@@ -128,6 +128,14 @@ def run(trigger_type: str = "manual") -> JobResult:
                 continue
 
             basic = payload.get("basicdata") or {}
+            missing_keys = [k for k in BEDROOM_KEY_MAP if k not in basic]
+            if missing_keys:
+                failed.append(f"{borough}({fips}): missing basicdata keys {missing_keys}")
+                logger.warning(
+                    "hud_borough_missing_keys borough=%s missing=%s",
+                    borough, missing_keys,
+                )
+                continue
             per_borough[borough] = {
                 "fips": fips,
                 "area_name": payload.get("area_name"),
@@ -173,6 +181,10 @@ def run(trigger_type: str = "manual") -> JobResult:
             "per_borough": per_borough,
             "failed_boroughs": failed,
         }
+        if rows_written == 0:
+            raise RuntimeError(f"HUD FMR wrote 0 rows; failures={failed[:3]}")
+        if failed:
+            result.status = "partial"
         logger.info(
             "sync_hud_fmr done year=%d api_calls=%d rows_written=%d failed=%d",
             fmr_year, api_calls, rows_written, len(failed),

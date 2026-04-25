@@ -3,7 +3,7 @@
 Cadence follows docs/NYC_Agent_Data_Sync_Design.md §5:
 
   daily   02:30 ET   sync_nypd_crime, sync_311
-  weekly  Sun 03:00  sync_facilities, sync_overpass_poi, sync_mta_static
+  weekly  Sun 03:00  sync_facilities, sync_overpass_poi, sync_mta_static, sync_mta_bus_static
   weekly  Sun 04:30  build_map_layers      (after the weekly snapshot wave)
   monthly 1st 04:00  sync_zori_hud, sync_nta
 
@@ -47,6 +47,7 @@ SCHEDULE: list[tuple[str, dict[str, Any]]] = [
     ("sync_facilities",     {"day_of_week": "sun", "hour": 3, "minute":  0}),
     ("sync_overpass_poi",   {"day_of_week": "sun", "hour": 3, "minute": 30}),
     ("sync_mta_static",     {"day_of_week": "sun", "hour": 4, "minute":  0}),
+    ("sync_mta_bus_static", {"day_of_week": "sun", "hour": 4, "minute": 15}),
     ("build_map_layers",    {"day_of_week": "sun", "hour": 4, "minute": 30}),
     # Monthly — boundaries and rent benchmark series.
     ("sync_nta",       {"day": 1, "hour": 4, "minute":  0}),

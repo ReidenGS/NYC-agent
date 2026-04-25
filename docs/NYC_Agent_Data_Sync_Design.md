@@ -52,6 +52,8 @@ MVP 接口：
 GET  /health
 GET  /sync/jobs
 GET  /sync/status
+GET  /sync/freshness
+GET  /sync/scheduler
 POST /sync/run/{job_name}
 POST /sync/run-bootstrap
 ```
@@ -115,7 +117,7 @@ MVP seed 区域：
 RentCast 不允许自动定时刷新。
 
 规则：
-- 只允许手动触发 `POST /sync/run/rentcast_listings`
+- 只允许手动触发 `POST /sync/run/sync_rentcast?confirm_paid=yes`
 - 触发前必须显示预计 API 调用次数
 - 每次运行有最大调用次数
 - 每月有最大调用次数
@@ -213,12 +215,14 @@ WHERE longitude IS NOT NULL
 | 同步任务 | 后续局部聚合 |
 |---|---|
 | `sync_nypd_crime` | 更新 `app_crime_incident_snapshot` + `app_area_metrics_daily.crime_count_30d` |
-| `sync_311_noise` | 更新 `app_area_metrics_daily.complaint_noise_30d` |
+| `sync_311` | 更新 `app_area_metrics_daily.complaint_noise_30d` |
 | `sync_overpass_poi` | 更新 `app_area_entertainment_category_daily`、`app_area_convenience_category_daily`、`app_map_poi_snapshot` |
 | `sync_facilities` | 更新 `app_area_convenience_category_daily`、`app_map_poi_snapshot` |
 | `sync_rentcast` | 更新 `app_area_rental_listing_snapshot` + `app_area_rental_market_daily` |
-| `sync_zori_hud` | 更新 `app_area_rent_benchmark_monthly` |
-| `sync_mta_static` | 更新 `app_transit_stop_dimension` + `app_area_metrics_daily.transit_station_count` |
+| `sync_zori_hud` | 更新 `app_area_rent_benchmark_monthly`，只写 ZORI benchmark |
+| `sync_hud_fmr` | 更新 `app_area_rent_benchmark_monthly`，写 HUD FMR official benchmark |
+| `sync_mta_static` | 更新 `app_transit_stop_dimension(mode='subway')` + `app_area_metrics_daily.transit_station_count` |
+| `sync_mta_bus_static` | 更新 `app_transit_stop_dimension(mode='bus')` + `app_area_metrics_daily.transit_station_count` |
 | `run_bootstrap` | 最后统一重算聚合表和 seed 地图图层 |
 
 ## 11. 地图图层缓存

@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS app_area_metrics_daily (
   crime_index_100 NUMERIC(6,2) NULL,                            -- 犯罪强度指数（0-100，值越高表示风险越高）
   entertainment_poi_count INTEGER NOT NULL DEFAULT 0,           -- 娱乐设施点位数量（酒吧/影院/夜生活等）
   convenience_facility_count INTEGER NOT NULL DEFAULT 0,        -- 便利设施数量（学校/图书馆/公园等）
-  transit_station_count INTEGER NOT NULL DEFAULT 0,             -- 交通站点数量（地铁站等）
+  transit_station_count INTEGER NOT NULL DEFAULT 0,             -- 交通站点数量（地铁站/公交站）
   complaint_noise_30d INTEGER NOT NULL DEFAULT 0,               -- 近30天噪音相关311投诉数量
   rent_index_value NUMERIC(10,2) NULL,                          -- 租金指数或租金基线值（用于租金对比）
   source_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,           -- 每指标来源/窗口元信息（jsonb merge 保留多源）
@@ -386,3 +386,80 @@ SELECT DISTINCT ON (m.area_id)
   m.updated_at
 FROM app_area_metrics_daily m
 ORDER BY m.area_id, m.metric_date DESC;
+-- 数据同步新鲜度视图：供 /sync/freshness、Gateway /debug/dependencies
+-- 和后续管理面板判断每个同步任务最近是否成功、是否过期。
+CREATE OR REPLACE VIEW v_sync_freshness AS
+WITH expected(job_name, expected_interval_hours, schedule_label) AS (
+  VALUES
+    ('sync_nta', 45 * 24, 'monthly on day 1 04:00 America/New_York'),
+    ('sync_nypd_crime', 48, 'daily 02:30 America/New_York'),
+    ('sync_311', 48, 'daily 02:45 America/New_York'),
+    ('sync_facilities', 10 * 24, 'weekly Sunday 03:00 America/New_York'),
+    ('sync_overpass_poi', 10 * 24, 'weekly Sunday 03:30 America/New_York'),
+    ('sync_mta_static', 10 * 24, 'weekly Sunday 04:00 America/New_York'),
+    ('sync_mta_bus_static', 10 * 24, 'weekly Sunday 04:15 America/New_York'),
+    ('build_map_layers', 10 * 24, 'weekly Sunday 04:30 America/New_York'),
+    ('sync_zori_hud', 45 * 24, 'monthly on day 1 04:30 America/New_York'),
+    ('sync_hud_fmr', 400 * 24, 'annual Oct 5 05:00 America/New_York'),
+    ('sync_rentcast', 45 * 24, 'manual paid job only')
+),
+last_success AS (
+  SELECT DISTINCT ON (job_name)
+         job_name,
+         finished_at AS last_success_at
+  FROM app_data_sync_job_log
+  WHERE status = 'succeeded'
+    AND finished_at IS NOT NULL
+  ORDER BY job_name, finished_at DESC
+),
+last_usable AS (
+  SELECT DISTINCT ON (job_name)
+         job_name,
+         finished_at AS last_usable_at,
+         status AS last_usable_status
+  FROM app_data_sync_job_log
+  WHERE status IN ('succeeded', 'partial')
+    AND finished_at IS NOT NULL
+  ORDER BY job_name, finished_at DESC
+),
+last_any AS (
+  SELECT DISTINCT ON (job_name)
+         job_name,
+         status AS last_status,
+         started_at AS last_started_at,
+         finished_at AS last_finished_at,
+         rows_fetched AS last_rows_fetched,
+         rows_written AS last_rows_written,
+         api_calls_used AS last_api_calls_used,
+         error_code AS last_error_code,
+         error_message AS last_error_message
+  FROM app_data_sync_job_log
+  ORDER BY job_name, started_at DESC
+)
+SELECT
+  e.job_name,
+  e.expected_interval_hours,
+  e.schedule_label,
+  ls.last_success_at,
+  lu.last_usable_at,
+  lu.last_usable_status,
+  la.last_status,
+  la.last_started_at,
+  la.last_finished_at,
+  la.last_rows_fetched,
+  la.last_rows_written,
+  la.last_api_calls_used,
+  la.last_error_code,
+  la.last_error_message,
+  CASE
+    WHEN lu.last_usable_at IS NULL THEN NULL
+    ELSE FLOOR(EXTRACT(EPOCH FROM (NOW() - lu.last_usable_at)) / 60)::INTEGER
+  END AS minutes_since_last_usable,
+  CASE
+    WHEN lu.last_usable_at IS NULL THEN TRUE
+    ELSE NOW() - lu.last_usable_at > (e.expected_interval_hours || ' hours')::INTERVAL
+  END AS is_stale
+FROM expected e
+LEFT JOIN last_success ls USING (job_name)
+LEFT JOIN last_usable lu USING (job_name)
+LEFT JOIN last_any la USING (job_name);

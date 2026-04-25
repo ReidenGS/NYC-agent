@@ -13,9 +13,10 @@ Spec: [docs/NYC_Agent_Data_Sync_Design.md](../../docs/NYC_Agent_Data_Sync_Design
 | GET    | `/ready`                   | DB + PostGIS reachable                 |
 | GET    | `/sync/jobs`               | List registered job names              |
 | GET    | `/sync/status?limit=20`    | Read recent rows from `app_data_sync_job_log` |
+| GET    | `/sync/freshness`          | Read `v_sync_freshness` plus scheduler next-run metadata |
 | GET    | `/sync/scheduler`          | Inspect APScheduler state (enabled flag + next-run for each job) |
 | POST   | `/sync/run/{job_name}`     | Submit one job (async); poll status. Paid jobs (see below) require `?confirm_paid=yes`. |
-| POST   | `/sync/run-bootstrap`      | Submit the bootstrap chain (sync_nta → sync_nypd_crime → sync_overpass_poi → sync_facilities → sync_mta_static → sync_311 → build_map_layers). RentCast and ZORI are excluded due to cost/api-key constraints. |
+| POST   | `/sync/run-bootstrap`      | Submit the bootstrap chain (sync_nta → sync_nypd_crime → sync_overpass_poi → sync_facilities → sync_mta_static → sync_mta_bus_static → sync_311 → build_map_layers). RentCast and ZORI/HUD are excluded due to cost/api-key/cadence constraints. |
 
 ### Paid jobs (hard server-side gate)
 
@@ -46,7 +47,7 @@ Cadence (NYC time, per design §5):
 | Cron                        | Jobs |
 |-----------------------------|------|
 | Daily 02:30 / 02:45         | `sync_nypd_crime`, `sync_311` |
-| Sun 03:00 / 03:30 / 04:00   | `sync_facilities`, `sync_overpass_poi`, `sync_mta_static` |
+| Sun 03:00 / 03:30 / 04:00 / 04:15 | `sync_facilities`, `sync_overpass_poi`, `sync_mta_static`, `sync_mta_bus_static` |
 | Sun 04:30                   | `build_map_layers` (after the weekly snapshot wave) |
 | 1st of month 04:00 / 04:30  | `sync_nta`, `sync_zori_hud` |
 | Oct 5 05:00 (annual)        | `sync_hud_fmr` (after HUD's FY rollover Oct 1) |
@@ -68,6 +69,7 @@ curl http://localhost:8030/sync/scheduler | jq
 - `sync_nypd_crime` — NYPD complaints from Socrata `qgea-i56i` → `app_crime_incident_snapshot` (PostGIS spatial assignment to NTA) + aggregate `crime_count_30d` into `app_area_metrics_daily`
 - `sync_overpass_poi` — OpenStreetMap POIs (entertainment + convenience) via Overpass within the union bbox of seed NTAs → `app_map_poi_snapshot` + aggregate to `app_area_entertainment_category_daily` and `app_area_convenience_category_daily`. Categories per docs/NYC_Agent_Data_Sources_API_SQL.md §6.2.
 - `sync_mta_static` — MTA Subway station dictionary from NYS Open Data `39hk-dx4f` → `app_transit_stop_dimension` (mode=subway) + aggregate `transit_station_count` per NTA into `app_area_metrics_daily`. Static data only — realtime arrivals are out of scope and handled by `mcp-transit` via Redis short cache.
+- `sync_mta_bus_static` — MTA official static bus GTFS zip feeds (Bronx/Brooklyn/Manhattan/Queens/Staten Island/MTA Bus Company) → `app_transit_stop_dimension` (mode=bus) by parsing each feed's `stops.txt`. After this runs, `transit_station_count` counts both subway and bus stops.
 - `sync_facilities` — NYC Facilities Database `67g2-p84d` filtered to 5 verified facgroups (parks, libraries, K-12 schools, health care, cultural) → `app_map_poi_snapshot` (poi_type=convenience, source=67g2-p84d) + aggregate `facility_count` per category into `app_area_convenience_category_daily`. Coexists with overpass-sourced rows because PK includes source.
 - `sync_311` — NYC 311 Service Requests `erm2-nwe9` filtered to noise complaints → aggregate-only path (no snapshot table per design §8). Streams into a TEMP table, runs PostGIS spatial assignment + 30-day count, upserts `complaint_noise_30d` into `app_area_metrics_daily`.
 - `sync_zori_hud` — Zillow ZORI ZIP-level rent benchmark CSV with NYC modzcta-derived ZIP→NTA mapping → `app_area_rent_benchmark_monthly` (benchmark_type=zori, benchmark_geo_type=zip, bedroom_type=all). Last 24 months ingested. The HUD half of the historical name is now its own job (`sync_hud_fmr`) — both coexist via the PK that includes `benchmark_type`.
@@ -100,6 +102,6 @@ WHERE area_name ILIKE '%Astoria%';
 cd services/data-sync-service
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-DATABASE_URL=postgresql+psycopg://nyc_agent:nyc_agent_dev@localhost:5432/nyc_agent \
+DATABASE_URL_SYNC=postgresql+psycopg://nyc_agent:nyc_agent_password@localhost:5432/nyc_agent \
   uvicorn app.main:app --reload --port 8030
 ```

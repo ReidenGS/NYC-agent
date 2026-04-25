@@ -29,6 +29,7 @@ BOOTSTRAP_CHAIN = [
     "sync_overpass_poi",
     "sync_facilities",
     "sync_mta_static",
+    "sync_mta_bus_static",
     "sync_311",
     # Map layers must run last — they read app_area_metrics_daily +
     # app_map_poi_snapshot + app_crime_incident_snapshot, all populated above.
@@ -53,6 +54,24 @@ def sync_status(limit: int = 20) -> dict[str, Any]:
     with db_session() as session:
         rows = sync_log_repo.list_recent(session, limit=limit)
     return {"recent": rows}
+
+
+@router.get("/sync/freshness")
+def sync_freshness() -> dict[str, Any]:
+    scheduled_by_job = {
+        item["id"].replace("sched__", "", 1): item
+        for item in scheduler_mod.list_scheduled()
+    }
+    with db_session() as session:
+        rows = [
+            dict(r)
+            for r in session.execute(text("SELECT * FROM v_sync_freshness ORDER BY job_name")).mappings()
+        ]
+    for row in rows:
+        sched = scheduled_by_job.get(row["job_name"])
+        row["next_run_time"] = sched["next_run_time"] if sched else None
+        row["scheduler_trigger"] = sched["trigger"] if sched else None
+    return {"freshness": rows}
 
 
 @router.get("/sync/scheduler")

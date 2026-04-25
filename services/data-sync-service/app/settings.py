@@ -42,9 +42,30 @@ class Settings(BaseSettings):
         "Zip_zori_uc_sfrcondomfr_sm_month.csv"
     )
 
+    mta_bus_static_feed_urls: str = (
+        "http://web.mta.info/developers/data/nyct/bus/google_transit_bronx.zip,"
+        "http://web.mta.info/developers/data/nyct/bus/google_transit_brooklyn.zip,"
+        "http://web.mta.info/developers/data/nyct/bus/google_transit_manhattan.zip,"
+        "http://web.mta.info/developers/data/nyct/bus/google_transit_queens.zip,"
+        "http://web.mta.info/developers/data/nyct/bus/google_transit_staten_island.zip,"
+        "http://web.mta.info/developers/data/busco/google_transit.zip"
+    )
+
     @property
     def bootstrap_area_list(self) -> list[str]:
         return [a.strip() for a in self.sync_bootstrap_areas.split(",") if a.strip()]
+
+    @property
+    def mta_bus_static_feed_list(self) -> list[str]:
+        urls = self.mta_bus_static_feed_urls.strip() or (
+            "http://web.mta.info/developers/data/nyct/bus/google_transit_bronx.zip,"
+            "http://web.mta.info/developers/data/nyct/bus/google_transit_brooklyn.zip,"
+            "http://web.mta.info/developers/data/nyct/bus/google_transit_manhattan.zip,"
+            "http://web.mta.info/developers/data/nyct/bus/google_transit_queens.zip,"
+            "http://web.mta.info/developers/data/nyct/bus/google_transit_staten_island.zip,"
+            "http://web.mta.info/developers/data/busco/google_transit.zip"
+        )
+        return [u.strip() for u in urls.split(",") if u.strip()]
 
     @property
     def resolved_database_url(self) -> str:
