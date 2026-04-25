@@ -32,6 +32,36 @@ services:
       timeout: 5s
       retries: 10
 
+  data-sync-service:
+    build:
+      context: ./services/data-sync-service
+    container_name: nyc_agent_data_sync
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql+psycopg://nyc_agent:nyc_agent_dev@postgres:5432/nyc_agent}
+      SYNC_ENABLE_SCHEDULED_JOBS: ${SYNC_ENABLE_SCHEDULED_JOBS:-false}
+      SYNC_BOOTSTRAP_AREAS: ${SYNC_BOOTSTRAP_AREAS:-}
+      SOCRATA_APP_TOKEN: ${SOCRATA_APP_TOKEN:-}
+      SOCRATA_PAGE_SIZE: ${SOCRATA_PAGE_SIZE:-1000}
+      SOCRATA_MAX_ROWS_PER_JOB: ${SOCRATA_MAX_ROWS_PER_JOB:-50000}
+      RENTCAST_SYNC_ENABLED: ${RENTCAST_SYNC_ENABLED:-false}
+      RENTCAST_API_KEY: ${RENTCAST_API_KEY:-}
+      RENTCAST_MAX_CALLS_PER_RUN: ${RENTCAST_MAX_CALLS_PER_RUN:-5}
+      RENTCAST_MAX_CALLS_PER_MONTH: ${RENTCAST_MAX_CALLS_PER_MONTH:-50}
+      OVERPASS_MAX_REQUESTS_PER_RUN: ${OVERPASS_MAX_REQUESTS_PER_RUN:-10}
+      OVERPASS_SLEEP_SECONDS: ${OVERPASS_SLEEP_SECONDS:-3}
+      MAP_LAYER_PREGENERATE_FOR_SEED: ${MAP_LAYER_PREGENERATE_FOR_SEED:-true}
+    ports:
+      - "${DATA_SYNC_PORT:-8030}:8030"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8030/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   nyc_agent_pgdata:
   nyc_agent_redisdata:
