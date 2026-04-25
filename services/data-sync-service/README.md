@@ -21,8 +21,9 @@ Spec: [docs/NYC_Agent_Data_Sync_Design.md](../../docs/NYC_Agent_Data_Sync_Design
 - `sync_nypd_crime` — NYPD complaints from Socrata `qgea-i56i` → `app_crime_incident_snapshot` (PostGIS spatial assignment to NTA) + aggregate `crime_count_30d` into `app_area_metrics_daily`
 - `sync_overpass_poi` — OpenStreetMap POIs (entertainment + convenience) via Overpass within the union bbox of seed NTAs → `app_map_poi_snapshot` + aggregate to `app_area_entertainment_category_daily` and `app_area_convenience_category_daily`. Categories per docs/NYC_Agent_Data_Sources_API_SQL.md §6.2.
 - `sync_mta_static` — MTA Subway station dictionary from NYS Open Data `39hk-dx4f` → `app_transit_stop_dimension` (mode=subway) + aggregate `transit_station_count` per NTA into `app_area_metrics_daily`. Static data only — realtime arrivals are out of scope and handled by `mcp-transit` via Redis short cache.
+- `sync_facilities` — NYC Facilities Database `67g2-p84d` filtered to 5 verified facgroups (parks, libraries, K-12 schools, health care, cultural) → `app_map_poi_snapshot` (poi_type=convenience, source=67g2-p84d) + aggregate `facility_count` per category into `app_area_convenience_category_daily`. Coexists with overpass-sourced rows because PK includes source.
 
-(RentCast, Facilities, 311, etc. land in subsequent rounds.)
+(RentCast, 311, ZORI/HUD, etc. land in subsequent rounds.)
 
 ## Run via docker-compose
 
