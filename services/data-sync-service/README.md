@@ -18,8 +18,9 @@ Spec: [NYC_Agent_Data_Sync_Design.md](../../NYC_Agent_Data_Sync_Design.md)
 ## Registered jobs (MVP)
 
 - `sync_nta` — NTA 2020 boundaries from Socrata `9nt8-h7nd` → `app_area_dimension`
+- `sync_nypd_crime` — NYPD complaints from Socrata `qgea-i56i` → `app_crime_incident_snapshot` (PostGIS spatial assignment to NTA) + aggregate `crime_count_30d` into `app_area_metrics_daily`
 
-(Crime, Overpass, RentCast, MTA, etc. land in subsequent rounds.)
+(Overpass, RentCast, MTA, etc. land in subsequent rounds.)
 
 ## Run via docker-compose
 
