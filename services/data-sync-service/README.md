@@ -13,6 +13,7 @@ Spec: [docs/NYC_Agent_Data_Sync_Design.md](../../docs/NYC_Agent_Data_Sync_Design
 | GET    | `/ready`                   | DB + PostGIS reachable                 |
 | GET    | `/sync/jobs`               | List registered job names              |
 | GET    | `/sync/status?limit=20`    | Read recent rows from `app_data_sync_job_log` |
+| GET    | `/sync/scheduler`          | Inspect APScheduler state (enabled flag + next-run for each job) |
 | POST   | `/sync/run/{job_name}`     | Submit one job (async); poll status. Paid jobs (see below) require `?confirm_paid=yes`. |
 | POST   | `/sync/run-bootstrap`      | Submit the bootstrap chain (sync_nta → sync_nypd_crime → sync_overpass_poi → sync_facilities → sync_mta_static → sync_311 → build_map_layers). RentCast and ZORI are excluded due to cost/api-key constraints. |
 
@@ -34,11 +35,31 @@ and `would_use_up_to` so you can decide before retrying. The bootstrap
 chain skips paid jobs by design — only an explicit confirmed request
 can spend RentCast quota.
 
-> **Scheduled jobs (APScheduler)**: not implemented yet. The dependency
-> is in `requirements.txt` for the upcoming `app/scheduler.py`, but no
-> jobs are currently registered against APScheduler. All triggers today
-> are manual via the endpoints above. `SYNC_ENABLE_SCHEDULED_JOBS` in
-> `.env` is reserved for the future implementation.
+### Scheduled jobs (APScheduler)
+
+Enabled when `SYNC_ENABLE_SCHEDULED_JOBS=true` in `.env`. Triggers reuse
+the same single-worker `ThreadPoolExecutor` as `/sync/run/{job_name}` so
+manual and scheduled runs serialize through one worker.
+
+Cadence (NYC time, per design §5):
+
+| Cron                        | Jobs |
+|-----------------------------|------|
+| Daily 02:30 / 02:45         | `sync_nypd_crime`, `sync_311` |
+| Sun 03:00 / 03:30 / 04:00   | `sync_facilities`, `sync_overpass_poi`, `sync_mta_static` |
+| Sun 04:30                   | `build_map_layers` (after the weekly snapshot wave) |
+| 1st of month 04:00 / 04:30  | `sync_nta`, `sync_zori_hud` |
+
+`sync_rentcast` is NEVER auto-scheduled — paid APIs only run on an
+explicit `/sync/run/sync_rentcast?confirm_paid=yes` call. The scheduler
+also `coalesce`s missed firings and uses a 1-hour `misfire_grace_time`,
+so a brief container restart won't trigger a thundering herd of catch-up
+runs.
+
+Inspect at runtime:
+```bash
+curl http://localhost:8030/sync/scheduler | jq
+```
 
 ## Registered jobs (MVP)
 

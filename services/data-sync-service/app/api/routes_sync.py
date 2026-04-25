@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import text
 
 from app import jobs as jobs_registry
+from app import scheduler as scheduler_mod
 from app.db.session import db_session
 from app.repositories import sync_log_repo
 from app.settings import settings
@@ -52,6 +53,14 @@ def sync_status(limit: int = 20) -> dict[str, Any]:
     with db_session() as session:
         rows = sync_log_repo.list_recent(session, limit=limit)
     return {"recent": rows}
+
+
+@router.get("/sync/scheduler")
+def scheduler_status() -> dict[str, Any]:
+    return {
+        "enabled": settings.sync_enable_scheduled_jobs,
+        "scheduled": scheduler_mod.list_scheduled(),
+    }
 
 
 @router.post("/sync/run/{job_name}")
