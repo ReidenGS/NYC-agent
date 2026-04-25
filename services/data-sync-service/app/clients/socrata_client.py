@@ -1,6 +1,6 @@
 """Thin wrapper around NYC Open Data (Socrata).
 
-Pagination per NYC_Agent_Data_Sync_Design.md §11.4 + retry per §7.
+Pagination per docs/NYC_Agent_Data_Sync_Design.md §11.4 + retry per §7.
 """
 from __future__ import annotations
 

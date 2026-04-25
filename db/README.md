@@ -10,7 +10,7 @@ db/
 ├── README.md              # this file
 └── init/                  # auto-run by the postgres container on first boot
     ├── 001_extensions.sql # CREATE EXTENSION postgis
-    └── 002_schema.sql     # business tables (mirrors NYC_Agent_Data_Sources_API_SQL.md §6)
+    └── 002_schema.sql     # business tables (mirrors docs/NYC_Agent_Data_Sources_API_SQL.md §6)
 ```
 
 The `init/` scripts only run on **first** container start (i.e. when the
@@ -47,7 +47,7 @@ SELECT PostGIS_Full_Version();
 ## Schema source of truth
 
 The DDL in `init/002_schema.sql` is a verbatim copy of the SQL block in
-`NYC_Agent_Data_Sources_API_SQL.md` §6. Any schema change must be made
+`docs/NYC_Agent_Data_Sources_API_SQL.md` §6. Any schema change must be made
 in that markdown first; this file is regenerated from it.
 
 ## Connection strings

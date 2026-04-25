@@ -1,7 +1,7 @@
 -- =====================================================================
 -- NYC Agent business schema (PostgreSQL 16 + PostGIS 3.4)
 -- This file is a verbatim copy of the SQL block in
---   NYC_Agent_Data_Sources_API_SQL.md  §6
+--   docs/NYC_Agent_Data_Sources_API_SQL.md  §6
 -- That markdown is the canonical contract. If schema must change,
 -- edit the markdown first, then regenerate this file.
 -- =====================================================================

@@ -1,6 +1,6 @@
 """CRUD for app_data_sync_job_log.
 
-Schema reference: NYC_Agent_Data_Sources_API_SQL.md §6 (table 17).
+Schema reference: docs/NYC_Agent_Data_Sources_API_SQL.md §6 (table 17).
 """
 from __future__ import annotations
 

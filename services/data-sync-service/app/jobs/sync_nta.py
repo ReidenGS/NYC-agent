@@ -1,7 +1,7 @@
 """sync_nta — pull NTA 2020 boundaries from NYC Open Data and upsert into app_area_dimension.
 
 Source: 9nt8-h7nd (NTA 2020)
-Field mapping (NYC_Agent_Data_Sources_API_SQL.md §5.3):
+Field mapping (docs/NYC_Agent_Data_Sources_API_SQL.md §5.3):
   nta2020   -> area_id           (PK, e.g. "BK0101")
   ntaname   -> area_name
   boroname  -> borough

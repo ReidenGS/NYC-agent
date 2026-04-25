@@ -3,7 +3,7 @@
 Independent FastAPI service that pulls external data (NYC Open Data, RentCast, etc.)
 into PostgreSQL + PostGIS. Does **not** participate in user chat / A2A / MCP.
 
-Spec: [NYC_Agent_Data_Sync_Design.md](../../NYC_Agent_Data_Sync_Design.md)
+Spec: [docs/NYC_Agent_Data_Sync_Design.md](../../docs/NYC_Agent_Data_Sync_Design.md)
 
 ## Endpoints
 

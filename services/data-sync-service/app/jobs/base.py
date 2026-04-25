@@ -1,6 +1,6 @@
 """Job execution template.
 
-Every sync job follows the same lifecycle (NYC_Agent_Backend_Tech_Framework.md §11.3):
+Every sync job follows the same lifecycle (docs/NYC_Agent_Backend_Tech_Framework.md §11.3):
   1. create job_log row with status=running
   2. execute job body
   3. finalize job_log with succeeded / partial / failed and stats

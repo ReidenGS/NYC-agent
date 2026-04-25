@@ -1,7 +1,7 @@
 """sync_nypd_crime — pull recent NYPD crime complaints and aggregate to NTAs.
 
 Source: Socrata `qgea-i56i` (NYPD Complaint Data).
-Field mapping (NYC_Agent_Data_Sources_API_SQL.md §5.1 + §6 table 3):
+Field mapping (docs/NYC_Agent_Data_Sources_API_SQL.md §5.1 + §6 table 3):
   cmplnt_num    -> incident_id (PK), source_record_id
   cmplnt_fr_dt  -> occurred_date
   cmplnt_fr_tm  -> occurred_hour (combined with date -> occurred_at)
