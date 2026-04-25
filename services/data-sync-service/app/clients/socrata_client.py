@@ -14,7 +14,7 @@ from app.settings import settings
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://data.cityofnewyork.us/resource"
+DEFAULT_DOMAIN = "data.cityofnewyork.us"
 DEFAULT_TIMEOUT = 60.0
 
 
@@ -32,16 +32,21 @@ def _headers() -> dict[str, str]:
 def fetch_all(
     dataset_id: str,
     *,
+    domain: str = DEFAULT_DOMAIN,
     select: str | None = None,
     where: str | None = None,
     order: str | None = None,
     page_size: int | None = None,
     max_rows: int | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Yield rows page-by-page. Retries with exponential backoff up to 3 times."""
+    """Yield rows page-by-page. Retries with exponential backoff up to 3 times.
+
+    `domain` defaults to NYC Open Data; pass `data.ny.gov` for NYS Open Data
+    (e.g. MTA stations dataset 39hk-dx4f).
+    """
     page_size = page_size or settings.socrata_page_size
     max_rows = max_rows or settings.socrata_max_rows_per_job
-    url = f"{BASE_URL}/{dataset_id}.json"
+    url = f"https://{domain}/resource/{dataset_id}.json"
 
     offset = 0
     fetched = 0
