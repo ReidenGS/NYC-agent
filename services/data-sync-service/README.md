@@ -13,8 +13,26 @@ Spec: [docs/NYC_Agent_Data_Sync_Design.md](../../docs/NYC_Agent_Data_Sync_Design
 | GET    | `/ready`                   | DB + PostGIS reachable                 |
 | GET    | `/sync/jobs`               | List registered job names              |
 | GET    | `/sync/status?limit=20`    | Read recent rows from `app_data_sync_job_log` |
-| POST   | `/sync/run/{job_name}`     | Submit one job (async); poll status    |
+| POST   | `/sync/run/{job_name}`     | Submit one job (async); poll status. Paid jobs (see below) require `?confirm_paid=yes`. |
 | POST   | `/sync/run-bootstrap`      | Submit the bootstrap chain (sync_nta → sync_nypd_crime → sync_overpass_poi → sync_facilities → sync_mta_static → sync_311). RentCast and ZORI are excluded due to cost/api-key constraints. |
+
+### Paid jobs (hard server-side gate)
+
+`sync_rentcast` consumes a paid external API. The HTTP layer refuses to
+dispatch it unless the caller explicitly opts in:
+
+```bash
+# Probe — returns HTTP 412 with budget preview, NO API call:
+curl -X POST http://localhost:8030/sync/run/sync_rentcast
+
+# Actually run it — consumes RentCast quota:
+curl -X POST 'http://localhost:8030/sync/run/sync_rentcast?confirm_paid=yes'
+```
+
+The 412 response body shows current `month_calls_used`, `monthly_cap`,
+and `would_use_up_to` so you can decide before retrying. The bootstrap
+chain skips paid jobs by design — only an explicit confirmed request
+can spend RentCast quota.
 
 > **Scheduled jobs (APScheduler)**: not implemented yet. The dependency
 > is in `requirements.txt` for the upcoming `app/scheduler.py`, but no
