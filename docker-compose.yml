@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-nyc_agent}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nyc_agent_dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nyc_agent_password}
       POSTGRES_DB: ${POSTGRES_DB:-nyc_agent}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
@@ -41,7 +41,10 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql+psycopg://nyc_agent:nyc_agent_dev@postgres:5432/nyc_agent}
+      # data-sync-service is sync code (psycopg). Prefer DATABASE_URL_SYNC_DOCKER;
+      # fall back to legacy DATABASE_URL_DOCKER, then to a built-in psycopg default.
+      DATABASE_URL_SYNC_DOCKER: ${DATABASE_URL_SYNC_DOCKER:-postgresql+psycopg://nyc_agent:nyc_agent_password@postgres:5432/nyc_agent}
+      DATABASE_URL_DOCKER: ${DATABASE_URL_DOCKER:-postgresql+psycopg://nyc_agent:nyc_agent_password@postgres:5432/nyc_agent}
       SYNC_ENABLE_SCHEDULED_JOBS: ${SYNC_ENABLE_SCHEDULED_JOBS:-false}
       SYNC_BOOTSTRAP_AREAS: ${SYNC_BOOTSTRAP_AREAS:-}
       SOCRATA_APP_TOKEN: ${SOCRATA_APP_TOKEN:-}

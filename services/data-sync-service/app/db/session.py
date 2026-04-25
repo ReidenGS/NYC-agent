@@ -10,7 +10,7 @@ from app.settings import settings
 
 def _build_engine() -> Engine:
     return create_engine(
-        settings.database_url,
+        settings.resolved_database_url,
         pool_size=5,
         max_overflow=5,
         pool_pre_ping=True,

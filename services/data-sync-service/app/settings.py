@@ -4,7 +4,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    database_url: str = "postgresql+psycopg://nyc_agent:nyc_agent_dev@localhost:5432/nyc_agent"
+    # data-sync-service is sync code (psycopg). It must NOT depend on the
+    # asyncpg-flavoured DATABASE_URL. Resolution order:
+    #   1. DATABASE_URL_SYNC_DOCKER  (set by docker-compose inside the network)
+    #   2. DATABASE_URL_SYNC         (host-side override)
+    #   3. DATABASE_URL              (legacy alias; only respected if it's
+    #                                already a psycopg DSN — see _resolved_db_url)
+    #   4. built-in psycopg default for local dev
+    database_url_sync_docker: str = ""
+    database_url_sync: str = ""
+    database_url: str = ""
 
     sync_enable_scheduled_jobs: bool = False
     sync_bootstrap_areas: str = (
@@ -21,6 +30,8 @@ class Settings(BaseSettings):
     rentcast_max_calls_per_run: int = 5
     rentcast_max_calls_per_month: int = 50
 
+    hud_user_api_token: str = ""
+
     overpass_max_requests_per_run: int = 10
     overpass_sleep_seconds: int = 3
 
@@ -34,6 +45,25 @@ class Settings(BaseSettings):
     @property
     def bootstrap_area_list(self) -> list[str]:
         return [a.strip() for a in self.sync_bootstrap_areas.split(",") if a.strip()]
+
+    @property
+    def resolved_database_url(self) -> str:
+        """Pick the right sync DSN, ignoring asyncpg-flavoured DATABASE_URL.
+
+        Priority:
+          1. DATABASE_URL_SYNC_DOCKER (compose network)
+          2. DATABASE_URL_SYNC (host)
+          3. DATABASE_URL — only if it's already a psycopg DSN (i.e. a host
+             override didn't accidentally hand us the asyncpg variant)
+          4. local default
+        """
+        if self.database_url_sync_docker:
+            return self.database_url_sync_docker
+        if self.database_url_sync:
+            return self.database_url_sync
+        if self.database_url and "+psycopg" in self.database_url:
+            return self.database_url
+        return "postgresql+psycopg://nyc_agent:nyc_agent_password@localhost:5432/nyc_agent"
 
 
 settings = Settings()
