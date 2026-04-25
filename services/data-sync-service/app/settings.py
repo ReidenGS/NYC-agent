@@ -26,6 +26,11 @@ class Settings(BaseSettings):
 
     map_layer_pregenerate_for_seed: bool = True
 
+    zori_zip_csv_url: str = (
+        "https://files.zillowstatic.com/research/public_csvs/zori/"
+        "Zip_zori_uc_sfrcondomfr_sm_month.csv"
+    )
+
     @property
     def bootstrap_area_list(self) -> list[str]:
         return [a.strip() for a in self.sync_bootstrap_areas.split(",") if a.strip()]
