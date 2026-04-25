@@ -19,8 +19,9 @@ Spec: [docs/NYC_Agent_Data_Sync_Design.md](../../docs/NYC_Agent_Data_Sync_Design
 
 - `sync_nta` — NTA 2020 boundaries from Socrata `9nt8-h7nd` → `app_area_dimension`
 - `sync_nypd_crime` — NYPD complaints from Socrata `qgea-i56i` → `app_crime_incident_snapshot` (PostGIS spatial assignment to NTA) + aggregate `crime_count_30d` into `app_area_metrics_daily`
+- `sync_overpass_poi` — OpenStreetMap POIs (entertainment + convenience) via Overpass within the union bbox of seed NTAs → `app_map_poi_snapshot` + aggregate to `app_area_entertainment_category_daily` and `app_area_convenience_category_daily`. Categories per docs/NYC_Agent_Data_Sources_API_SQL.md §6.2.
 
-(Overpass, RentCast, MTA, etc. land in subsequent rounds.)
+(RentCast, MTA, 311, etc. land in subsequent rounds.)
 
 ## Run via docker-compose
 
