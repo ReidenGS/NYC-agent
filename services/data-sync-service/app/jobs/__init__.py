@@ -7,6 +7,7 @@ from app.jobs import (
     sync_nta,
     sync_nypd_crime,
     sync_overpass_poi,
+    sync_rentcast,
     sync_zori_hud,
 )
 
@@ -18,6 +19,7 @@ JOBS: dict[str, callable] = {
     "sync_mta_static": sync_mta_static.run,
     "sync_311": sync_311.run,
     "sync_zori_hud": sync_zori_hud.run,
+    "sync_rentcast": sync_rentcast.run,
 }
 
 
