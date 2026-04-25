@@ -211,25 +211,42 @@ def run(trigger_type: str = "manual") -> JobResult:
         )
 
         # 2. Pull listings (one page = up to 500). Respect both caps.
+        # CRITICAL (per Codex review P1): the budget counter increments BEFORE
+        # the HTTP call (so failures still count as consumed quota — RentCast
+        # may have charged us). We must mirror that into ctx.api_calls_used
+        # whether or not the loop completes successfully, otherwise job_run()'s
+        # failure path would persist api_calls_used=0 and the per-month cap
+        # (which sums prior log rows) would under-count.
         budget = rentcast_client.RentCastBudget(max_per_run=run_cap)
         offset = 0
         all_listings: list[dict[str, Any]] = []
-        while True:
-            try:
-                page = rentcast_client.fetch_long_term_rentals(
-                    budget=budget,
-                    offset=offset,
-                    limit=rentcast_client.LISTINGS_PER_CALL,
-                )
-            except rentcast_client.RentCastQuotaExceeded:
-                logger.info("rentcast_quota_exceeded after %d calls", budget.used)
-                break
-            if not page:
-                break
-            all_listings.extend(page)
-            if len(page) < rentcast_client.LISTINGS_PER_CALL:
-                break
-            offset += len(page)
+        try:
+            while True:
+                try:
+                    page = rentcast_client.fetch_long_term_rentals(
+                        budget=budget,
+                        offset=offset,
+                        limit=rentcast_client.LISTINGS_PER_CALL,
+                    )
+                except rentcast_client.RentCastQuotaExceeded:
+                    logger.info(
+                        "rentcast_quota_exceeded after %d calls", budget.used
+                    )
+                    break
+                # Successful page: record now so even if a later page raises
+                # we still capture every consumed call.
+                ctx.api_calls_used = budget.used
+                if not page:
+                    break
+                all_listings.extend(page)
+                if len(page) < rentcast_client.LISTINGS_PER_CALL:
+                    break
+                offset += len(page)
+        finally:
+            # Failure path (network, 401/403, 5xx, anything) lands here too.
+            # The increment-before-call pattern in the client means budget.used
+            # is the truthful count of attempted calls.
+            ctx.api_calls_used = budget.used
 
         seen = len(all_listings)
         logger.info("rentcast_listings_fetched count=%d calls=%d", seen, budget.used)

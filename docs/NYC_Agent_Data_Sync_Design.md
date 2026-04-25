@@ -216,7 +216,7 @@ WHERE longitude IS NOT NULL
 | `sync_311_noise` | 更新 `app_area_metrics_daily.complaint_noise_30d` |
 | `sync_overpass_poi` | 更新 `app_area_entertainment_category_daily`、`app_area_convenience_category_daily`、`app_map_poi_snapshot` |
 | `sync_facilities` | 更新 `app_area_convenience_category_daily`、`app_map_poi_snapshot` |
-| `sync_rentcast_listings` | 更新 `app_area_rental_listing_snapshot` + `app_area_rental_market_daily` |
+| `sync_rentcast` | 更新 `app_area_rental_listing_snapshot` + `app_area_rental_market_daily` |
 | `sync_zori_hud` | 更新 `app_area_rent_benchmark_monthly` |
 | `sync_mta_static` | 更新 `app_transit_stop_dimension` + `app_area_metrics_daily.transit_station_count` |
 | `run_bootstrap` | 最后统一重算聚合表和 seed 地图图层 |
