@@ -51,6 +51,9 @@ SCHEDULE: list[tuple[str, dict[str, Any]]] = [
     # Monthly — boundaries and rent benchmark series.
     ("sync_nta",       {"day": 1, "hour": 4, "minute":  0}),
     ("sync_zori_hud",  {"day": 1, "hour": 4, "minute": 30}),
+    # Annual — HUD publishes new FMR each fiscal year (Oct 1).
+    # Run shortly after FY rollover to pick up the new numbers.
+    ("sync_hud_fmr",   {"month": 10, "day": 5, "hour": 5, "minute": 0}),
 ]
 
 

@@ -4,6 +4,7 @@ from app.jobs import (
     build_map_layers,
     sync_311,
     sync_facilities,
+    sync_hud_fmr,
     sync_mta_static,
     sync_nta,
     sync_nypd_crime,
@@ -20,6 +21,7 @@ JOBS: dict[str, callable] = {
     "sync_mta_static": sync_mta_static.run,
     "sync_311": sync_311.run,
     "sync_zori_hud": sync_zori_hud.run,
+    "sync_hud_fmr": sync_hud_fmr.run,
     "sync_rentcast": sync_rentcast.run,
     "build_map_layers": build_map_layers.run,
 }
