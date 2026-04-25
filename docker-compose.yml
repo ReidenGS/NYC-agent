@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: nyc_agent_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nyc_agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nyc_agent_password}
+      POSTGRES_DB: ${POSTGRES_DB:-nyc_agent}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - nyc_agent_pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nyc_agent} -d ${POSTGRES_DB:-nyc_agent}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: nyc_agent_redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - nyc_agent_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  data-sync-service:
+    build:
+      context: ./services/data-sync-service
+    container_name: nyc_agent_data_sync
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # data-sync-service is sync code (psycopg). Prefer DATABASE_URL_SYNC_DOCKER;
+      # fall back to legacy DATABASE_URL_DOCKER, then to a built-in psycopg default.
+      DATABASE_URL_SYNC_DOCKER: ${DATABASE_URL_SYNC_DOCKER:-postgresql+psycopg://nyc_agent:nyc_agent_password@postgres:5432/nyc_agent}
+      DATABASE_URL_DOCKER: ${DATABASE_URL_DOCKER:-postgresql+psycopg://nyc_agent:nyc_agent_password@postgres:5432/nyc_agent}
+      SYNC_ENABLE_SCHEDULED_JOBS: ${SYNC_ENABLE_SCHEDULED_JOBS:-false}
+      SYNC_BOOTSTRAP_AREAS: ${SYNC_BOOTSTRAP_AREAS:-}
+      SOCRATA_APP_TOKEN: ${SOCRATA_APP_TOKEN:-}
+      SOCRATA_PAGE_SIZE: ${SOCRATA_PAGE_SIZE:-1000}
+      SOCRATA_MAX_ROWS_PER_JOB: ${SOCRATA_MAX_ROWS_PER_JOB:-50000}
+      RENTCAST_SYNC_ENABLED: ${RENTCAST_SYNC_ENABLED:-false}
+      RENTCAST_API_KEY: ${RENTCAST_API_KEY:-}
+      HUD_USER_API_TOKEN: ${HUD_USER_API_TOKEN:-}
+      RENTCAST_MAX_CALLS_PER_RUN: ${RENTCAST_MAX_CALLS_PER_RUN:-5}
+      RENTCAST_MAX_CALLS_PER_MONTH: ${RENTCAST_MAX_CALLS_PER_MONTH:-50}
+      OVERPASS_MAX_REQUESTS_PER_RUN: ${OVERPASS_MAX_REQUESTS_PER_RUN:-10}
+      OVERPASS_SLEEP_SECONDS: ${OVERPASS_SLEEP_SECONDS:-3}
+      MAP_LAYER_PREGENERATE_FOR_SEED: ${MAP_LAYER_PREGENERATE_FOR_SEED:-true}
+    ports:
+      - "${DATA_SYNC_PORT:-8030}:8030"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8030/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  nyc_agent_pgdata:
+  nyc_agent_redisdata:
