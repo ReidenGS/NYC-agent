@@ -1,6 +1,7 @@
 """Job registry. Each job exposes a `run(trigger_type) -> JobResult`."""
 from app.jobs.base import JobResult
 from app.jobs import (
+    build_map_layers,
     sync_311,
     sync_facilities,
     sync_mta_static,
@@ -20,6 +21,7 @@ JOBS: dict[str, callable] = {
     "sync_311": sync_311.run,
     "sync_zori_hud": sync_zori_hud.run,
     "sync_rentcast": sync_rentcast.run,
+    "build_map_layers": build_map_layers.run,
 }
 
 

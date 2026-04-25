@@ -14,7 +14,7 @@ Spec: [docs/NYC_Agent_Data_Sync_Design.md](../../docs/NYC_Agent_Data_Sync_Design
 | GET    | `/sync/jobs`               | List registered job names              |
 | GET    | `/sync/status?limit=20`    | Read recent rows from `app_data_sync_job_log` |
 | POST   | `/sync/run/{job_name}`     | Submit one job (async); poll status. Paid jobs (see below) require `?confirm_paid=yes`. |
-| POST   | `/sync/run-bootstrap`      | Submit the bootstrap chain (sync_nta → sync_nypd_crime → sync_overpass_poi → sync_facilities → sync_mta_static → sync_311). RentCast and ZORI are excluded due to cost/api-key constraints. |
+| POST   | `/sync/run-bootstrap`      | Submit the bootstrap chain (sync_nta → sync_nypd_crime → sync_overpass_poi → sync_facilities → sync_mta_static → sync_311 → build_map_layers). RentCast and ZORI are excluded due to cost/api-key constraints. |
 
 ### Paid jobs (hard server-side gate)
 
@@ -50,6 +50,7 @@ can spend RentCast quota.
 - `sync_311` — NYC 311 Service Requests `erm2-nwe9` filtered to noise complaints → aggregate-only path (no snapshot table per design §8). Streams into a TEMP table, runs PostGIS spatial assignment + 30-day count, upserts `complaint_noise_30d` into `app_area_metrics_daily`.
 - `sync_zori_hud` — Zillow ZORI ZIP-level rent benchmark CSV with NYC modzcta-derived ZIP→NTA mapping → `app_area_rent_benchmark_monthly` (benchmark_type=zori, benchmark_geo_type=zip, bedroom_type=all). Last 24 months ingested. **Note:** despite the job name including "hud", this job currently writes ONLY ZORI rows. HUD FMR (county-level public xlsx) is deferred — it would land as a separate `sync_hud_fmr` job, both coexisting in `app_area_rent_benchmark_monthly` because the PK includes `benchmark_type`.
 - `sync_rentcast` — RentCast `/listings/rental/long-term` (manual trigger only, X-Api-Key required) → `app_area_rental_listing_snapshot` + aggregate `rent_min/median/max + listing_count` per (area_id, today, bedroom_type) into `app_area_rental_market_daily`. Strict cost guards: per-run cap `RENTCAST_MAX_CALLS_PER_RUN`, per-month cap `RENTCAST_MAX_CALLS_PER_MONTH` enforced by summing prior `app_data_sync_job_log.api_calls_used` for the current calendar month.
+- `build_map_layers` — pre-generate front-end GeoJSON layers for seed NTAs into `app_map_layer_cache`. Four layers per area: `choropleth · safety` (NTA polygon shaded by crime intensity), `heatmap · crime` (recent crime points capped at 1000), `marker · entertainment` and `marker · convenience` (POIs from `app_map_poi_snapshot`). Each layer ships with a `style_hint` JSON the frontend can read directly. TTL 7 days; failures of one layer don't block others (per design §11). Auto-runs at the end of `/sync/run-bootstrap`.
 
 ## Run via docker-compose
 

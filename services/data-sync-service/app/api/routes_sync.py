@@ -29,6 +29,9 @@ BOOTSTRAP_CHAIN = [
     "sync_facilities",
     "sync_mta_static",
     "sync_311",
+    # Map layers must run last — they read app_area_metrics_daily +
+    # app_map_poi_snapshot + app_crime_incident_snapshot, all populated above.
+    "build_map_layers",
 ]
 
 # Jobs that consume a paid external API. Calling them without the explicit
