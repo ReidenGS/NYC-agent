@@ -29,6 +29,7 @@ from sqlalchemy import text
 
 from app.clients import socrata_client
 from app.db.session import db_session
+from app.jobs._metrics_refresh import refresh_poi_totals
 from app.jobs.base import JobResult, job_run
 
 logger = logging.getLogger(__name__)
@@ -178,6 +179,7 @@ def run(trigger_type: str = "manual") -> JobResult:
 
         with db_session() as session:
             session.execute(AGGREGATE_SQL)
+            refresh_poi_totals(session)
 
         ctx.rows_fetched = seen
         ctx.rows_written = written

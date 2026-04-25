@@ -13,7 +13,14 @@ Spec: [docs/NYC_Agent_Data_Sync_Design.md](../../docs/NYC_Agent_Data_Sync_Design
 | GET    | `/ready`                   | DB + PostGIS reachable                 |
 | GET    | `/sync/jobs`               | List registered job names              |
 | GET    | `/sync/status?limit=20`    | Read recent rows from `app_data_sync_job_log` |
-| POST   | `/sync/run/{job_name}`     | Submit job (async); poll status        |
+| POST   | `/sync/run/{job_name}`     | Submit one job (async); poll status    |
+| POST   | `/sync/run-bootstrap`      | Submit the bootstrap chain (sync_nta → sync_nypd_crime → sync_overpass_poi → sync_facilities → sync_mta_static → sync_311). RentCast and ZORI are excluded due to cost/api-key constraints. |
+
+> **Scheduled jobs (APScheduler)**: not implemented yet. The dependency
+> is in `requirements.txt` for the upcoming `app/scheduler.py`, but no
+> jobs are currently registered against APScheduler. All triggers today
+> are manual via the endpoints above. `SYNC_ENABLE_SCHEDULED_JOBS` in
+> `.env` is reserved for the future implementation.
 
 ## Registered jobs (MVP)
 

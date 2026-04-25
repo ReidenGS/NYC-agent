@@ -27,6 +27,7 @@ from sqlalchemy import text
 
 from app.clients import overpass_client
 from app.db.session import db_session
+from app.jobs._metrics_refresh import refresh_poi_totals
 from app.jobs.base import JobResult, job_run
 from app.settings import settings
 
@@ -247,7 +248,7 @@ def run(trigger_type: str = "manual") -> JobResult:
                     skipped_outside += 1
             session.commit()
 
-        # 4. Aggregate to daily category tables.
+        # 4. Aggregate to daily category tables, then refresh main metric totals.
         with db_session() as session:
             session.execute(
                 text(_build_aggregate_sql("app_area_entertainment_category_daily", "entertainment"))
@@ -255,6 +256,7 @@ def run(trigger_type: str = "manual") -> JobResult:
             session.execute(
                 text(_build_aggregate_sql("app_area_convenience_category_daily", "convenience"))
             )
+            refresh_poi_totals(session)
 
         ctx.rows_fetched = seen
         ctx.rows_written = written
