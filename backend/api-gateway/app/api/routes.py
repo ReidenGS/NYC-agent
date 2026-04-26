@@ -184,8 +184,13 @@ def debug_dependencies():
     try:
         with httpx.Client(timeout=2.0) as client:
             response = client.get(f"{settings.data_sync_base_url.rstrip('/')}/sync/freshness")
-            response.raise_for_status()
-            data_sync = {'status': 'ok', **response.json()}
+            if response.status_code == 404:
+                status_response = client.get(f"{settings.data_sync_base_url.rstrip('/')}/sync/status", params={'limit': 5})
+                status_response.raise_for_status()
+                data_sync = {'status': 'ok', 'freshness': [], 'freshness_available': False, 'recent': status_response.json().get('recent', [])}
+            else:
+                response.raise_for_status()
+                data_sync = {'status': 'ok', 'freshness_available': True, **response.json()}
     except Exception as exc:
         data_sync = {'status': 'unavailable', 'error': str(exc)}
 
