@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import settings
+from app.realtime import refresh_predictions
 from nyc_agent_shared.time import now_iso
 
 app = FastAPI(title="NYC Agent MCP Transit", version="0.1.0")
@@ -52,7 +54,13 @@ def ready() -> dict[str, Any]:
         db = "ok"
     except Exception as exc:
         db = f"unavailable: {exc}"
-    return {"status": "ok" if db == "ok" else "degraded", "dependencies": {"postgres": db}}
+    realtime = {
+        "enabled": settings.transit_realtime_enabled,
+        "subway_feed": "configured",
+        "subway_api_key": "configured" if settings.mta_api_key else "not_configured_optional",
+        "bus_api_key": "configured" if settings.mta_bus_time_api_key else "not_configured",
+    }
+    return {"status": "ok" if db == "ok" else "degraded", "dependencies": {"postgres": db, "mta_realtime": realtime}}
 
 
 @app.get("/tools")
@@ -91,6 +99,15 @@ def get_next_departures(request: ToolRequest) -> dict[str, Any]:
     limit = max(1, min(int(args.get("limit") or 2), 5))
     if not mode or not route_id or not stop_id:
         return mcp_response("validation_error", "get_next_departures", None, error={"code": "MISSING_ARGUMENT", "message": "mode, route_id and stop_id are required.", "retryable": False})
+    refresh_meta: dict[str, Any] | None = None
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"SET LOCAL statement_timeout = {int(settings.transit_statement_timeout_ms)}"))
+            refresh_meta = refresh_predictions(conn, mode=mode, route_id=route_id, stop_id=stop_id)
+    except (SQLAlchemyError, httpx.HTTPError, ValueError) as exc:
+        refresh_meta = {"enabled": settings.transit_realtime_enabled, "error": type(exc).__name__, "message": str(exc), "retryable": True}
+    except Exception as exc:
+        refresh_meta = {"enabled": settings.transit_realtime_enabled, "error": type(exc).__name__, "message": "unexpected realtime refresh failure", "retryable": True}
     try:
         rows = db_rows(
             "SELECT prediction_id, mode, stop_id, route_id, trip_id, direction_id, arrival_time, departure_time, "
@@ -103,8 +120,8 @@ def get_next_departures(request: ToolRequest) -> dict[str, Any]:
     except SQLAlchemyError:
         return mcp_response("execution_error", "get_next_departures", None, error={"code": "DB_ERROR", "message": "departure query failed.", "retryable": True}, source_tables=["app_transit_realtime_prediction"])
     if not rows:
-        return mcp_response("no_data", "get_next_departures", {"departures": []}, source_tables=["app_transit_realtime_prediction"])
-    return mcp_response("success", "get_next_departures", {"stop_id": stop_id, "route_id": route_id, "departures": rows}, source_tables=["app_transit_realtime_prediction"])
+        return mcp_response("no_data", "get_next_departures", {"stop_id": stop_id, "route_id": route_id, "mode": mode, "departures": [], "refresh": refresh_meta}, source_tables=["app_transit_realtime_prediction"])
+    return mcp_response("success", "get_next_departures", {"stop_id": stop_id, "route_id": route_id, "mode": mode, "departures": rows, "refresh": refresh_meta}, source_tables=["app_transit_realtime_prediction"])
 
 
 @app.post("/tools/get_realtime_commute")

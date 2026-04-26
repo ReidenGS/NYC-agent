@@ -266,6 +266,13 @@ services:
       PYTHONPATH: /app/shared
       DATABASE_URL_SYNC: ${DATABASE_URL_SYNC_DOCKER:-postgresql+psycopg://nyc_agent:nyc_agent_password@postgres:5432/nyc_agent}
       TRANSIT_STATEMENT_TIMEOUT_MS: ${TRANSIT_STATEMENT_TIMEOUT_MS:-3000}
+      TRANSIT_REALTIME_ENABLED: ${TRANSIT_REALTIME_ENABLED:-true}
+      TRANSIT_REALTIME_TTL_SECONDS: ${TRANSIT_REALTIME_TTL_SECONDS:-60}
+      TRANSIT_REALTIME_REQUEST_TIMEOUT_SECONDS: ${TRANSIT_REALTIME_REQUEST_TIMEOUT_SECONDS:-5}
+      MTA_API_KEY: ${MTA_API_KEY:-}
+      MTA_BUS_TIME_API_KEY: ${MTA_BUS_TIME_API_KEY:-}
+      MTA_SUBWAY_FEED_BASE_URL: ${MTA_SUBWAY_FEED_BASE_URL:-https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2F}
+      MTA_BUS_GTFS_RT_TRIP_UPDATES_URL: ${MTA_BUS_GTFS_RT_TRIP_UPDATES_URL:-https://gtfsrt.prod.obanyc.com/tripUpdates}
     ports:
       - "${MCP_TRANSIT_PORT:-8025}:8025"
     healthcheck:
