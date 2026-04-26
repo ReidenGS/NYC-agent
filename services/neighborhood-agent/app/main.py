@@ -6,7 +6,8 @@ import httpx
 from fastapi import FastAPI
 
 from app.config import settings
-from app.neighborhood_logic import build_plan, summarize_results
+from app.llm_planner import build_plan
+from app.neighborhood_logic import summarize_results
 from nyc_agent_shared.prompt_loader import list_prompts, load_prompt
 from nyc_agent_shared.schemas import A2ARequest, A2AResponse, ApiError
 
@@ -15,7 +16,8 @@ app = FastAPI(title="NYC Agent Neighborhood Agent", version="0.1.0")
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"status": "ok", "service": "neighborhood-agent", "prompts_loaded": len(list_prompts())}
+    planner = "llm_optional" if settings.use_llm_sql_planner else "deterministic"
+    return {"status": "ok", "service": "neighborhood-agent", "prompts_loaded": len(list_prompts()), "sql_planner": planner}
 
 
 @app.get("/ready")
@@ -27,7 +29,8 @@ def ready() -> dict[str, Any]:
         mcp = "ok"
     except Exception as exc:
         mcp = f"unavailable: {exc}"
-    return {"status": "ok" if mcp == "ok" else "degraded", "dependencies": {"mcp-sql": mcp}}
+    llm = "configured" if settings.openai_api_key and settings.use_llm_sql_planner else "not_configured_optional"
+    return {"status": "ok" if mcp == "ok" else "degraded", "dependencies": {"mcp-sql": mcp, "llm-sql-planner": llm}}
 
 
 @app.get("/debug/prompts")

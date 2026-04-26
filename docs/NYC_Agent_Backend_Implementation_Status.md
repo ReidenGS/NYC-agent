@@ -8,8 +8,8 @@
 | --- | --- | --- | --- |
 | `api-gateway` | `8000` | 前端唯一 HTTP 入口，负责 session/chat/profile/debug API | 已接入远程 `orchestrator-agent`，失败时保留本地 mock fallback |
 | `orchestrator-agent` | `8010` | 主 Agent，负责会话理解、缺槽追问、profile 读取/更新、后续 Domain Agent 调度入口 | 已实现最小链路：session、profile、chat、prompt debug |
-| `housing-agent` | `8011` | 租房领域 Agent，负责生成 housing SQL plan、调用 MCP SQL、返回结构化租金/预算匹配结果 | 已接入 Orchestrator 的租金/预算问题 |
-| `neighborhood-agent` | `8012` | 区域画像 Agent，负责安全、便利设施、娱乐设施和区域概览 SQL plan | 已接入 Orchestrator 的安全/便利/娱乐问题 |
+| `housing-agent` | `8011` | 租房领域 Agent，负责生成 housing SQL plan、调用 MCP SQL、返回结构化租金/预算匹配结果 | 已接入 Orchestrator 的租金/预算问题；支持 GPT-4o SQL planner，可自动 fallback |
+| `neighborhood-agent` | `8012` | 区域画像 Agent，负责安全、便利设施、娱乐设施和区域概览 SQL plan | 已接入 Orchestrator 的安全/便利/娱乐问题；支持 GPT-4o SQL planner，可自动 fallback |
 | `transit-agent` | `8013` | 通勤领域 Agent，负责下一班车、实时/缓存通勤时间工具调用 | 已接入 Orchestrator 的地铁/公交/通勤问题 |
 | `profile-agent` | `8014` | 用户画像状态 Agent，负责把 Orchestrator 的 profile 任务转成 MCP 工具调用 | 已实现 A2A `/a2a` 入口 |
 | `weather-agent` | `8015` | 天气领域 Agent，负责当前天气和小时预报工具调用 | 已接入 Orchestrator 的天气问题 |
@@ -60,6 +60,11 @@ MCP_SQL_URL_DOCKER=http://mcp-sql:8020
 MCP_TRANSIT_URL_DOCKER=http://mcp-transit:8025
 MCP_WEATHER_URL_DOCKER=http://mcp-weather:8027
 DATABASE_URL_SQL_DOCKER=postgresql+psycopg://nyc_agent:nyc_agent_password@postgres:5432/nyc_agent
+OPENAI_API_KEY=
+OPENAI_BASE_URL=https://api.openai.com/v1
+USE_LLM_SQL_PLANNER=true
+HOUSING_AGENT_SQL_MODEL=gpt-4o
+NEIGHBORHOOD_AGENT_SQL_MODEL=gpt-4o
 ```
 
 ## 3. 已实现接口
@@ -101,6 +106,13 @@ DATABASE_URL_SQL_DOCKER=postgresql+psycopg://nyc_agent:nyc_agent_password@postgr
 | `housing.rent_query` | 查询租金区间、预算匹配、benchmark fallback |
 | `housing.listing_search` | 查询 active listing 候选房源 |
 
+SQL planner 模式：
+
+- `OPENAI_API_KEY` 有值且 `USE_LLM_SQL_PLANNER=true` 时，优先调用 GPT-4o 生成 SQL plan。
+- LLM 输出必须是严格 JSON，并通过轻量 plan schema 校验。
+- `mcp-sql` 仍是最终安全边界，会校验 SQL 白名单、LIMIT、敏感表和只读规则。
+- LLM 请求失败、输出不合格、API key 为空时，自动 fallback 到 deterministic SQL plan。
+
 ### `neighborhood-agent`
 
 | Method | Path | 用途 |
@@ -118,6 +130,13 @@ DATABASE_URL_SQL_DOCKER=postgresql+psycopg://nyc_agent:nyc_agent_password@postgr
 | `neighborhood.convenience_query` | 查询便利设施分类数量和样例点位 |
 | `neighborhood.entertainment_query` | 查询娱乐设施分类数量和样例点位 |
 | `area.metrics_query` | 查询区域安全/便利/娱乐/交通概览指标 |
+
+SQL planner 模式：
+
+- `OPENAI_API_KEY` 有值且 `USE_LLM_SQL_PLANNER=true` 时，优先调用 GPT-4o 生成 SQL plan。
+- LLM 输出必须是严格 JSON，并通过轻量 plan schema 校验。
+- `mcp-sql` 仍是最终安全边界，会按 `safety/amenity/entertainment` domain 白名单执行校验。
+- LLM 请求失败、输出不合格、API key 为空时，自动 fallback 到 deterministic SQL plan。
 
 ### `mcp-sql`
 
@@ -237,7 +256,12 @@ PYTHONPATH=shared:services/mcp-profile .venv/bin/python -m uvicorn app.main:app 
 PYTHONPATH=shared:services/profile-agent MCP_PROFILE_URL=http://127.0.0.1:8026 .venv/bin/python -m uvicorn app.main:app --app-dir services/profile-agent --host 127.0.0.1 --port 8014
 PYTHONPATH=shared:services/mcp-sql DATABASE_URL_SQL=postgresql+psycopg://nyc_agent:nyc_agent_password@localhost:5432/nyc_agent .venv/bin/python -m uvicorn app.main:app --app-dir services/mcp-sql --host 127.0.0.1 --port 8020
 PYTHONPATH=shared:services/housing-agent MCP_SQL_URL=http://127.0.0.1:8020 .venv/bin/python -m uvicorn app.main:app --app-dir services/housing-agent --host 127.0.0.1 --port 8011
-PYTHONPATH=shared:services/orchestrator-agent PROFILE_AGENT_URL=http://127.0.0.1:8014 .venv/bin/python -m uvicorn app.main:app --app-dir services/orchestrator-agent --host 127.0.0.1 --port 8010
+PYTHONPATH=shared:services/neighborhood-agent MCP_SQL_URL=http://127.0.0.1:8020 .venv/bin/python -m uvicorn app.main:app --app-dir services/neighborhood-agent --host 127.0.0.1 --port 8012
+PYTHONPATH=shared:services/mcp-transit DATABASE_URL_SYNC=postgresql+psycopg://nyc_agent:nyc_agent_password@localhost:5432/nyc_agent .venv/bin/python -m uvicorn app.main:app --app-dir services/mcp-transit --host 127.0.0.1 --port 8025
+PYTHONPATH=shared:services/transit-agent MCP_TRANSIT_URL=http://127.0.0.1:8025 .venv/bin/python -m uvicorn app.main:app --app-dir services/transit-agent --host 127.0.0.1 --port 8013
+PYTHONPATH=shared:services/mcp-weather .venv/bin/python -m uvicorn app.main:app --app-dir services/mcp-weather --host 127.0.0.1 --port 8027
+PYTHONPATH=shared:services/weather-agent MCP_WEATHER_URL=http://127.0.0.1:8027 .venv/bin/python -m uvicorn app.main:app --app-dir services/weather-agent --host 127.0.0.1 --port 8015
+PYTHONPATH=shared:services/orchestrator-agent PROFILE_AGENT_URL=http://127.0.0.1:8014 HOUSING_AGENT_URL=http://127.0.0.1:8011 NEIGHBORHOOD_AGENT_URL=http://127.0.0.1:8012 TRANSIT_AGENT_URL=http://127.0.0.1:8013 WEATHER_AGENT_URL=http://127.0.0.1:8015 .venv/bin/python -m uvicorn app.main:app --app-dir services/orchestrator-agent --host 127.0.0.1 --port 8010
 ```
 
 ## 5. 已验证内容
@@ -267,8 +291,8 @@ profile.budget.max = 3000
 
 后续继续落地时建议按这个顺序：
 
-1. 接入 `safety-agent`、`amenity-agent`、`entertainment-agent`，共享 `mcp-sql` 校验与执行能力，但 prompt 和领域输出分开。
-2. 接入 `transit-agent` 和 `weather-agent` 的固定 MCP 工具调用。
-3. 把 `mcp-profile` 从内存存储替换为 Postgres/Redis 持久化，保持工具接口不变。
-4. 在 `api-gateway /debug/dependencies` 中继续补齐各 Agent 和 MCP 的健康状态。
-5. 将 `housing-agent` 当前确定性 SQL-plan 逻辑替换为 LLM SQL-plan 生成，并保留现有 validator 作为安全闸门。
+1. 把 `mcp-profile` 从内存存储替换为 Postgres/Redis 持久化，保持工具接口不变。
+2. 在 `mcp-transit` 内部补 MTA GTFS-RT / Bus Time 拉取和短缓存。
+3. 把 `mcp-weather` 的 seed 坐标解析替换为从 `app_area_dimension` 计算 centroid。
+4. 为 `housing-agent` / `neighborhood-agent` 增加 LLM planner 的 mock 单元测试，覆盖 JSON 解析失败和 validator 拒绝后的 fallback。
+5. 如果简历展示需要显式 MCP 拆分，可在 `mcp-sql` 外再加 `mcp-safety`、`mcp-amenity`、`mcp-entertainment` 薄封装服务，内部仍复用同一 SQL Validator。

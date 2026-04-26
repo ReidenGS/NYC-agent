@@ -136,6 +136,11 @@ services:
     environment:
       PYTHONPATH: /app/shared
       MCP_SQL_URL: ${MCP_SQL_URL_DOCKER:-http://mcp-sql:8020}
+      USE_LLM_SQL_PLANNER: ${USE_LLM_SQL_PLANNER:-true}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      HOUSING_AGENT_SQL_MODEL: ${HOUSING_AGENT_SQL_MODEL:-gpt-4o}
+      LLM_REQUEST_TIMEOUT_SECONDS: ${LLM_REQUEST_TIMEOUT_SECONDS:-20}
     ports:
       - "${HOUSING_AGENT_PORT:-8011}:8011"
     healthcheck:
@@ -156,6 +161,11 @@ services:
     environment:
       PYTHONPATH: /app/shared
       MCP_SQL_URL: ${MCP_SQL_URL_DOCKER:-http://mcp-sql:8020}
+      USE_LLM_SQL_PLANNER: ${USE_LLM_SQL_PLANNER:-true}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      NEIGHBORHOOD_AGENT_SQL_MODEL: ${NEIGHBORHOOD_AGENT_SQL_MODEL:-gpt-4o}
+      LLM_REQUEST_TIMEOUT_SECONDS: ${LLM_REQUEST_TIMEOUT_SECONDS:-20}
     ports:
       - "${NEIGHBORHOOD_AGENT_PORT:-8012}:8012"
     healthcheck:
