@@ -167,9 +167,19 @@ def debug_dependencies():
     except Exception as exc:
         data_sync = {'status': 'unavailable', 'error': str(exc)}
 
+    orchestrator_status = {'status': 'disabled'}
+    if settings.use_remote_orchestrator:
+        try:
+            with httpx.Client(timeout=2.0) as client:
+                response = client.get(f"{settings.orchestrator_agent_url.rstrip('/')}/ready")
+                response.raise_for_status()
+                orchestrator_status = {'status': 'ok', **response.json()}
+        except Exception as exc:
+            orchestrator_status = {'status': 'unavailable', 'error': str(exc)}
+
     return envelope({'dependencies': {
-        'orchestrator-agent': settings.orchestrator_agent_url if settings.use_remote_orchestrator else 'disabled',
-        'mcp-services': 'pending',
-        'postgres': 'not_used_by_gateway_mvp',
+        'orchestrator-agent': orchestrator_status,
+        'mcp-services': 'behind_orchestrator_agents',
+        'postgres': 'used_by_data_sync_and_mcp_services',
         'data-sync-service': data_sync,
     }})

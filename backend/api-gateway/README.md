@@ -4,10 +4,10 @@ FastAPI implementation of the frontend-facing API contract for NYC Agent.
 
 Current scope:
 - Provides runnable Gateway routes for frontend integration.
-- Uses in-memory session/profile state and deterministic mock domain data.
-- Keeps Gateway thin: route handlers delegate to `services/orchestrator.py` and mock data services.
+- Calls remote `orchestrator-agent` by default for session/profile/chat.
+- Keeps a deterministic in-process fallback for local frontend work when Agent services are down.
 - Exposes `/debug/dependencies`, including data-sync freshness when `DATA_SYNC_BASE_URL` is reachable.
-- Does not access PostgreSQL/MCP directly yet. Those calls will be swapped to A2A/MCP clients later.
+- Does not access PostgreSQL/MCP directly; domain work goes through A2A Agent services and MCP services.
 
 Run locally:
 
@@ -31,7 +31,7 @@ Docker Compose:
 
 ```bash
 cp .env.example .env
-docker compose up -d postgres redis data-sync-service api-gateway
+docker compose up -d postgres redis data-sync-service mcp-profile profile-agent mcp-sql housing-agent neighborhood-agent mcp-transit transit-agent mcp-weather weather-agent orchestrator-agent api-gateway
 ```
 
 Gateway environment:
@@ -41,4 +41,7 @@ API_GATEWAY_PORT=8000
 API_GATEWAY_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 DATA_SYNC_BASE_URL=http://localhost:8030
 DATA_SYNC_BASE_URL_DOCKER=http://data-sync-service:8030
+USE_REMOTE_ORCHESTRATOR=true
+ORCHESTRATOR_AGENT_URL=http://localhost:8010
+ORCHESTRATOR_AGENT_URL_DOCKER=http://orchestrator-agent:8010
 ```

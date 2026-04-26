@@ -580,7 +580,7 @@ def chat(request: ChatRequest) -> dict[str, Any]:
         next_action = "respond_final"
         missing = []
     else:
-        answer = f"我先按 {area_name} 来看。A2A 链路已接入 profile-agent 和 mcp-profile；后续会继续把 housing、neighborhood、transit、weather 领域 Agent 接进来。你可以继续问这个区域的房租、安全、通勤或设施。"
+        answer = f"我先按 {area_name} 来看。当前已接入 housing、neighborhood、transit、weather 和 profile Agent。你可以继续问这个区域的房租、安全、通勤、天气或设施。"
         next_action = "respond_final"
         missing = []
 
