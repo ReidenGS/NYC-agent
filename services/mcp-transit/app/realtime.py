@@ -65,6 +65,16 @@ def prediction_id(*parts: Any) -> str:
     return f"pred_{digest}"
 
 
+def matched_stop_id(mode: str, feed_stop_id: str, requested_stop_id: str | None) -> str | None:
+    if not requested_stop_id:
+        return feed_stop_id
+    if feed_stop_id == requested_stop_id:
+        return requested_stop_id
+    if mode == "subway" and feed_stop_id.startswith(requested_stop_id):
+        return requested_stop_id
+    return None
+
+
 def subway_feed_url(route_id: str) -> str:
     feed = SUBWAY_FEED_BY_ROUTE.get(route_id.upper())
     if not feed:
@@ -99,7 +109,8 @@ def iter_predictions(feed: gtfs_realtime_pb2.FeedMessage, *, mode: str, route_id
         if trip_route != target_route:
             continue
         for stu in trip_update.stop_time_update:
-            if stop_id and stu.stop_id != stop_id:
+            output_stop_id = matched_stop_id(mode, stu.stop_id, stop_id)
+            if not output_stop_id:
                 continue
             arrival_time = parse_ts(stu.arrival.time if has_field(stu, "arrival") else None)
             departure_time = parse_ts(stu.departure.time if has_field(stu, "departure") else None)
@@ -115,9 +126,9 @@ def iter_predictions(feed: gtfs_realtime_pb2.FeedMessage, *, mode: str, route_id
             stop_sequence = int(stu.stop_sequence) if has_field(stu, "stop_sequence") else None
             direction_id = str(trip.direction_id) if has_field(trip, "direction_id") else None
             rows.append({
-                "prediction_id": prediction_id(mode, trip_route, trip.trip_id, stu.stop_id, arrival_time, departure_time),
+                "prediction_id": prediction_id(mode, trip_route, trip.trip_id, output_stop_id, arrival_time, departure_time),
                 "mode": mode,
-                "stop_id": stu.stop_id,
+                "stop_id": output_stop_id,
                 "route_id": trip_route,
                 "trip_id": trip.trip_id or None,
                 "direction_id": direction_id,
@@ -130,7 +141,7 @@ def iter_predictions(feed: gtfs_realtime_pb2.FeedMessage, *, mode: str, route_id
                 "source": "mta_subway_gtfs_rt" if mode == "subway" else "mta_bus_time_gtfs_rt",
                 "feed_timestamp": feed_ts,
                 "ttl_seconds": settings.transit_realtime_ttl_seconds,
-                "raw_source": json.dumps({"entity_id": entity.id or None, "feed_timestamp": feed.header.timestamp or None}),
+                "raw_source": json.dumps({"entity_id": entity.id or None, "feed_stop_id": stu.stop_id or None, "feed_timestamp": feed.header.timestamp or None}),
             })
     rows.sort(key=lambda row: row["departure_time"] or row["arrival_time"] or datetime.max)
     for index, row in enumerate(rows, start=1):

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.commute import build_commute_result
 from app.config import settings
 from app.realtime import refresh_predictions
 from nyc_agent_shared.time import now_iso
@@ -130,20 +131,24 @@ def get_realtime_commute(request: ToolRequest) -> dict[str, Any]:
     origin = str(args.get("origin") or "").strip()
     destination = str(args.get("destination") or "").strip()
     mode = str(args.get("mode") or "").strip().lower()
+    route_id = str(args.get("route_id") or "").strip().upper() or None
     if not origin or not destination or not mode:
         return mcp_response("validation_error", "get_realtime_commute", None, error={"code": "MISSING_ARGUMENT", "message": "origin, destination and mode are required.", "retryable": False})
     try:
-        rows = db_rows(
-            "SELECT cache_key, origin_text, destination_text, mode, origin_stop_id, destination_stop_id, route_id, "
-            "walking_to_stop_minutes, waiting_minutes, in_vehicle_minutes, total_minutes, recommended_leave_at, "
-            "estimated_arrival_at, next_departures, realtime_used, fallback_used, source_snapshot, fetched_at, expires_at "
-            "FROM app_transit_trip_result_cache "
-            "WHERE origin_text ILIKE :origin AND destination_text ILIKE :destination AND mode = :mode AND expires_at >= NOW() "
-            "ORDER BY fetched_at DESC LIMIT 1",
-            {"origin": f"%{origin}%", "destination": f"%{destination}%", "mode": mode},
-        )
+        with engine.begin() as conn:
+            conn.execute(text(f"SET LOCAL statement_timeout = {int(settings.transit_statement_timeout_ms)}"))
+            result = build_commute_result(
+                conn,
+                session_id=request.session_id,
+                origin=origin,
+                destination=destination,
+                mode=mode,
+                route_id=route_id,
+            )
     except SQLAlchemyError:
         return mcp_response("execution_error", "get_realtime_commute", None, error={"code": "DB_ERROR", "message": "commute query failed.", "retryable": True}, source_tables=["app_transit_trip_result_cache"])
-    if not rows:
+    except (httpx.HTTPError, ValueError) as exc:
+        return mcp_response("execution_error", "get_realtime_commute", None, error={"code": "TRANSIT_REFRESH_ERROR", "message": str(exc), "retryable": True}, source_tables=["app_transit_trip_result_cache", "app_transit_stop_dimension", "app_transit_realtime_prediction"])
+    if not result:
         return mcp_response("no_data", "get_realtime_commute", None, source_tables=["app_transit_trip_result_cache"])
-    return mcp_response("success", "get_realtime_commute", rows[0], source_tables=["app_transit_trip_result_cache"])
+    return mcp_response("success", "get_realtime_commute", result, source_tables=["app_transit_trip_result_cache", "app_transit_stop_dimension", "app_transit_realtime_prediction"])

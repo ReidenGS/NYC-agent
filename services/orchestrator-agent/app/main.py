@@ -247,10 +247,10 @@ def _build_transit_payload(message: str) -> dict[str, Any]:
     slots: dict[str, Any] = {}
     if mode:
         slots["mode"] = {"value": mode, "source": "user_explicit", "confidence": 0.9}
+    route = _extract_route_id(message)
+    if route:
+        slots["route_id"] = {"value": route, "source": "user_explicit", "confidence": 0.8}
     if task_type == "transit.next_departure":
-        route = _extract_route_id(message)
-        if route:
-            slots["route_id"] = {"value": route, "source": "user_explicit", "confidence": 0.8}
         station_match = re.search(r"(?:在|从|at)\s*([A-Za-z0-9 .'/&-]{2,40}|[\u4e00-\u9fffA-Za-z0-9 .'/&-]{2,40})", message)
         if station_match:
             slots["stop_name"] = {"value": station_match.group(1).strip(), "source": "user_explicit", "confidence": 0.6}
@@ -471,9 +471,10 @@ def chat(request: ChatRequest) -> dict[str, Any]:
                 else:
                     answer = "当前实时 feed 没有返回匹配的下一班车。"
             else:
+                realtime_label = "实时" if metrics.get("realtime_used") else "估算"
                 answer = (
                     f"从 {metrics.get('origin_text') or metrics.get('origin')} 到 {metrics.get('destination_text') or metrics.get('destination')} "
-                    f"坐 {metrics.get('mode')} 的缓存通勤时间约为 {metrics.get('total_minutes')} 分钟。"
+                    f"坐 {metrics.get('mode')} 的{realtime_label}通勤时间约为 {metrics.get('total_minutes')} 分钟。"
                 )
             next_action = "respond_final"
             missing = []

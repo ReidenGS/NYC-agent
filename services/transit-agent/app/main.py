@@ -138,7 +138,10 @@ def handle_a2a(req: A2ARequest) -> A2AResponse:
             missing = require_slots(req, slots, ["origin", "destination", "mode"])
             if missing:
                 return missing
-            commute = call_tool("get_realtime_commute", req.session_id, {"origin": slot(slots, "origin"), "destination": slot(slots, "destination"), "mode": slot(slots, "mode")})
+            commute_args = {"origin": slot(slots, "origin"), "destination": slot(slots, "destination"), "mode": slot(slots, "mode")}
+            if slot(slots, "route_id"):
+                commute_args["route_id"] = slot(slots, "route_id")
+            commute = call_tool("get_realtime_commute", req.session_id, commute_args)
             result = {
                 "status": "success" if commute.get("status") == "success" else "no_data",
                 "domain": "transit",
