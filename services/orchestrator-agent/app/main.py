@@ -88,6 +88,21 @@ def _housing_a2a(task_type: str, trace: str, session_id: str | None, payload: di
         return response.json()
 
 
+def _neighborhood_a2a(task_type: str, trace: str, session_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
+    req = A2ARequest(
+        trace_id=trace,
+        session_id=session_id,
+        source_agent="orchestrator-agent",
+        target_agent="neighborhood-agent",
+        task_type=task_type,
+        payload=payload,
+    )
+    with httpx.Client(timeout=settings.request_timeout_seconds) as client:
+        response = client.post(f"{settings.neighborhood_agent_url.rstrip('/')}/a2a", json=req.model_dump())
+        response.raise_for_status()
+        return response.json()
+
+
 def _find_area(message: str) -> dict[str, str] | None:
     lower = message.lower()
     for alias, area in AREA_ALIASES.items():
@@ -141,9 +156,36 @@ def _build_housing_payload(message: str, profile: dict[str, Any], area: dict[str
     }
 
 
+def _neighborhood_task_type(message: str) -> str:
+    lower = message.lower()
+    if any(k in lower or k in message for k in ["安全", "犯罪", "治安", "偷", "抢劫", "safe", "crime", "theft", "robbery"]):
+        return "neighborhood.crime_query"
+    if any(k in lower or k in message for k in ["超市", "便利", "公园", "学校", "图书馆", "药店", "医院", "健身", "amenity", "supermarket", "park", "library", "school", "pharmacy"]):
+        return "neighborhood.convenience_query"
+    if any(k in lower or k in message for k in ["娱乐", "酒吧", "餐厅", "咖啡", "影院", "夜生活", "博物馆", "bar", "restaurant", "cafe", "cinema", "nightlife"]):
+        return "neighborhood.entertainment_query"
+    return "area.metrics_query"
+
+
+def _is_neighborhood_query(message: str) -> bool:
+    return _neighborhood_task_type(message) != "area.metrics_query" or any(k in message.lower() or k in message for k in ["附近怎么样", "这个区怎么样", "区域怎么样", "nearby", "neighborhood"])
+
+
+def _build_neighborhood_payload(message: str, profile: dict[str, Any], area: dict[str, str] | None) -> dict[str, Any]:
+    active_area = area or profile.get("target_area") or {}
+    return {
+        "domain_user_query": message,
+        "slots": {
+            "area_id": {"value": active_area.get("area_id") or profile.get("target_area_id"), "source": "user_explicit" if area else "session_memory", "confidence": 0.95 if area else 0.85},
+            "area_name": {"value": active_area.get("area_name"), "source": "user_explicit" if area else "session_memory", "confidence": 0.95 if area else 0.85},
+        },
+        "domain_context": {"window_days": 30, "point_limit": 20, "map_layer_requests": []},
+    }
+
+
 def _needs_area(message: str) -> bool:
     lower = message.lower()
-    keywords = ["安全", "犯罪", "房租", "租金", "预算", "附近", "这个区", "区域", "rent", "housing", "safe", "crime", "nearby", "area"]
+    keywords = ["安全", "犯罪", "房租", "租金", "预算", "附近", "这个区", "区域", "便利", "娱乐", "超市", "酒吧", "rent", "housing", "safe", "crime", "nearby", "area", "amenity"]
     return any(k in lower or k in message for k in keywords)
 
 
@@ -168,8 +210,15 @@ def ready() -> dict[str, Any]:
         housing = "ok"
     except Exception as exc:
         housing = f"unavailable: {exc}"
-    status = "ok" if profile == "ok" and housing == "ok" else "degraded"
-    return {"status": status, "dependencies": {"profile-agent": profile, "housing-agent": housing}}
+    try:
+        with httpx.Client(timeout=settings.request_timeout_seconds) as client:
+            response = client.get(f"{settings.neighborhood_agent_url.rstrip('/')}/ready")
+            response.raise_for_status()
+        neighborhood = "ok"
+    except Exception as exc:
+        neighborhood = f"unavailable: {exc}"
+    status = "ok" if profile == "ok" and housing == "ok" and neighborhood == "ok" else "degraded"
+    return {"status": status, "dependencies": {"profile-agent": profile, "housing-agent": housing, "neighborhood-agent": neighborhood}}
 
 
 @app.get("/debug/prompts")
@@ -299,6 +348,59 @@ def chat(request: ChatRequest) -> dict[str, Any]:
             next_action = "respond_final"
             missing = []
             sources = [{"name": "housing-agent", "type": "a2a", "updated_at": now_iso()}, {"name": "mcp-sql", "type": "sql", "updated_at": now_iso()}]
+    elif _is_neighborhood_query(message):
+        task_type = _neighborhood_task_type(message)
+        neighborhood_response = _neighborhood_a2a(task_type, trace, request.session_id, _build_neighborhood_payload(message, profile, area))
+        if neighborhood_response.get("status") == "clarification_required":
+            clarification = neighborhood_response.get("payload", {}).get("clarification") or "我需要知道你想查询哪个区域。"
+            answer = clarification
+            next_action = "ask_follow_up"
+            missing = neighborhood_response.get("payload", {}).get("missing_slots", [])
+            sources = [{"name": "neighborhood-agent", "type": "a2a", "updated_at": now_iso()}]
+        elif neighborhood_response.get("status") == "unsupported_data_request":
+            payload = neighborhood_response.get("payload", {})
+            answer = f"当前数据库暂时不能回答这个区域问题：{payload.get('unsupported_reason', '缺少对应字段')} {payload.get('suggested_alternative', '')}".strip()
+            next_action = "respond_final"
+            missing = []
+            sources = [{"name": "neighborhood-agent", "type": "a2a", "updated_at": now_iso()}]
+        elif neighborhood_response.get("status") == "no_data":
+            result = neighborhood_response.get("payload", {}).get("neighborhood_result", {})
+            answer = f"当前数据库中没有找到 {area_name} 的匹配区域画像数据。{result.get('suggested_alternative', '可以先运行对应数据同步任务后再查。')}"
+            next_action = "respond_final"
+            missing = []
+            sources = [{"name": "mcp-sql", "type": "sql", "updated_at": now_iso()}]
+        else:
+            result = neighborhood_response.get("payload", {}).get("neighborhood_result", {})
+            metrics = result.get("derived_metrics", {})
+            result_type = result.get("neighborhood_result_type")
+            if result_type in {"safety_summary", "crime_breakdown"}:
+                answer = (
+                    f"{area_name} 的安全数据查询结果：近 30 天犯罪数为 {metrics.get('total_crime_count_30d')}，"
+                    f"犯罪指数为 {metrics.get('crime_index_100')}，风险等级参考为 {metrics.get('safety_level')}。"
+                )
+                if metrics.get("crime_count_by_category"):
+                    top = metrics["crime_count_by_category"][:3]
+                    answer += " 主要犯罪类别：" + "、".join(f"{row.get('offense_category')}({row.get('crime_count')})" for row in top) + "。"
+            elif result_type in {"amenity_summary", "amenity_breakdown"}:
+                top = metrics.get("top_categories") or []
+                answer = f"{area_name} 的便利设施总数为 {metrics.get('total_count')}，密度参考为 {metrics.get('poi_density_level')}。"
+                if top:
+                    answer += " 主要分类：" + "、".join(f"{row.get('category_name')}({row.get('poi_count')})" for row in top[:5]) + "。"
+            elif result_type in {"entertainment_summary", "entertainment_breakdown"}:
+                top = metrics.get("top_categories") or []
+                answer = f"{area_name} 的娱乐设施总数为 {metrics.get('total_count')}，密度参考为 {metrics.get('poi_density_level')}。"
+                if top:
+                    answer += " 主要分类：" + "、".join(f"{row.get('category_name')}({row.get('poi_count')})" for row in top[:5]) + "。"
+            else:
+                raw = metrics.get("metrics") or {}
+                answer = (
+                    f"{area_name} 的区域概览：犯罪数 {raw.get('crime_count_30d')}，"
+                    f"便利设施 {raw.get('convenience_facility_count')}，娱乐设施 {raw.get('entertainment_poi_count')}，"
+                    f"交通站点 {raw.get('transit_station_count')}。"
+                )
+            next_action = "respond_final"
+            missing = []
+            sources = [{"name": "neighborhood-agent", "type": "a2a", "updated_at": now_iso()}, {"name": "mcp-sql", "type": "sql", "updated_at": now_iso()}]
     elif any(k in message or k in lower for k in ["你是谁", "能做什么", "who are you"]):
         answer = "我是一个纽约租房与生活区域决策助手，主要帮助刚到纽约的人理解不同区域的安全、租金、通勤、便利设施和娱乐设施，并根据你的偏好逐步缩小候选居住区域。"
         next_action = "respond_final"

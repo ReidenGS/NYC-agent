@@ -9,6 +9,7 @@
 | `api-gateway` | `8000` | 前端唯一 HTTP 入口，负责 session/chat/profile/debug API | 已接入远程 `orchestrator-agent`，失败时保留本地 mock fallback |
 | `orchestrator-agent` | `8010` | 主 Agent，负责会话理解、缺槽追问、profile 读取/更新、后续 Domain Agent 调度入口 | 已实现最小链路：session、profile、chat、prompt debug |
 | `housing-agent` | `8011` | 租房领域 Agent，负责生成 housing SQL plan、调用 MCP SQL、返回结构化租金/预算匹配结果 | 已接入 Orchestrator 的租金/预算问题 |
+| `neighborhood-agent` | `8012` | 区域画像 Agent，负责安全、便利设施、娱乐设施和区域概览 SQL plan | 已接入 Orchestrator 的安全/便利/娱乐问题 |
 | `profile-agent` | `8014` | 用户画像状态 Agent，负责把 Orchestrator 的 profile 任务转成 MCP 工具调用 | 已实现 A2A `/a2a` 入口 |
 | `mcp-sql` | `8020` | 通用只读 SQL MCP，按 domain 白名单校验并执行 SQL | 已支持 `housing/safety/amenity/entertainment` 表白名单，当前 housing 已使用 |
 | `mcp-profile` | `8026` | Profile MCP 工具服务，负责 session/profile 的读写 | 已实现 MCP-style HTTP tool endpoint，当前为内存存储 |
@@ -23,6 +24,8 @@ Frontend
   -> api-gateway
     -> orchestrator-agent
       -> housing-agent
+        -> mcp-sql
+      -> neighborhood-agent
         -> mcp-sql
       -> profile-agent
         -> mcp-profile
@@ -42,6 +45,7 @@ ORCHESTRATOR_AGENT_URL_DOCKER=http://orchestrator-agent:8010
 PROFILE_AGENT_URL_DOCKER=http://profile-agent:8014
 MCP_PROFILE_URL_DOCKER=http://mcp-profile:8026
 HOUSING_AGENT_URL_DOCKER=http://housing-agent:8011
+NEIGHBORHOOD_AGENT_URL_DOCKER=http://neighborhood-agent:8012
 MCP_SQL_URL_DOCKER=http://mcp-sql:8020
 DATABASE_URL_SQL_DOCKER=postgresql+psycopg://nyc_agent:nyc_agent_password@postgres:5432/nyc_agent
 ```
@@ -85,6 +89,24 @@ DATABASE_URL_SQL_DOCKER=postgresql+psycopg://nyc_agent:nyc_agent_password@postgr
 | `housing.rent_query` | 查询租金区间、预算匹配、benchmark fallback |
 | `housing.listing_search` | 查询 active listing 候选房源 |
 
+### `neighborhood-agent`
+
+| Method | Path | 用途 |
+| --- | --- | --- |
+| `GET` | `/health` | 服务健康检查 |
+| `GET` | `/ready` | 检查 `mcp-sql` 是否可用 |
+| `GET` | `/debug/prompts` | 查看 neighborhood prompt |
+| `POST` | `/a2a` | 接收 Orchestrator 的 neighborhood A2A 任务 |
+
+当前支持：
+
+| task_type | 能力 |
+| --- | --- |
+| `neighborhood.crime_query` | 查询安全指标、犯罪类型分布、特定犯罪类型数量 |
+| `neighborhood.convenience_query` | 查询便利设施分类数量和样例点位 |
+| `neighborhood.entertainment_query` | 查询娱乐设施分类数量和样例点位 |
+| `area.metrics_query` | 查询区域安全/便利/娱乐/交通概览指标 |
+
 ### `mcp-sql`
 
 | Method | Path | 用途 |
@@ -127,7 +149,7 @@ DATABASE_URL_SQL_DOCKER=postgresql+psycopg://nyc_agent:nyc_agent_password@postgr
 
 ```bash
 cp .env.example .env
-docker compose up -d postgres redis mcp-profile profile-agent mcp-sql housing-agent orchestrator-agent api-gateway
+docker compose up -d postgres redis mcp-profile profile-agent mcp-sql housing-agent neighborhood-agent orchestrator-agent api-gateway
 ```
 
 仅本机调试三个 Agent 服务时，可以使用：

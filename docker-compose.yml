@@ -144,6 +144,26 @@ services:
       timeout: 5s
       retries: 5
 
+  neighborhood-agent:
+    build:
+      context: .
+      dockerfile: ./services/neighborhood-agent/Dockerfile
+    container_name: nyc_agent_neighborhood_agent
+    restart: unless-stopped
+    depends_on:
+      mcp-sql:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /app/shared
+      MCP_SQL_URL: ${MCP_SQL_URL_DOCKER:-http://mcp-sql:8020}
+    ports:
+      - "${NEIGHBORHOOD_AGENT_PORT:-8012}:8012"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8012/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   orchestrator-agent:
     build:
       context: .
@@ -155,10 +175,13 @@ services:
         condition: service_healthy
       housing-agent:
         condition: service_healthy
+      neighborhood-agent:
+        condition: service_healthy
     environment:
       PYTHONPATH: /app/shared
       PROFILE_AGENT_URL: ${PROFILE_AGENT_URL_DOCKER:-http://profile-agent:8014}
       HOUSING_AGENT_URL: ${HOUSING_AGENT_URL_DOCKER:-http://housing-agent:8011}
+      NEIGHBORHOOD_AGENT_URL: ${NEIGHBORHOOD_AGENT_URL_DOCKER:-http://neighborhood-agent:8012}
     ports:
       - "${ORCHESTRATOR_AGENT_PORT:-8010}:8010"
     healthcheck:
