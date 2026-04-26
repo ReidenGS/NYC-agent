@@ -38,6 +38,17 @@ def error_envelope(code: str, message: str, *, session_id: str | None = None, st
     raise HTTPException(status_code=status_code, detail=payload.model_dump())
 
 
+def ensure_session_exists(session_id: str) -> None:
+    if settings.use_remote_orchestrator:
+        try:
+            remote_orchestrator.get_profile(session_id)
+            return
+        except Exception:
+            pass
+    if session_store.get(session_id) is None:
+        error_envelope('VALIDATION_ERROR', 'session_id not found', session_id=session_id, status_code=404)
+
+
 @router.get('/health')
 def health() -> dict:
     return {'status': 'ok', 'service': 'api-gateway'}
@@ -115,8 +126,7 @@ def chat(request: ChatRequest):
 
 @router.get('/areas/{area_id}/metrics', response_model=ApiEnvelope[AreaMetricsResponse])
 def area_metrics(area_id: str, session_id: str = Query(...)):
-    if session_store.get(session_id) is None:
-        error_envelope('VALIDATION_ERROR', 'session_id not found', session_id=session_id, status_code=404)
+    ensure_session_exists(session_id)
     return envelope(mock_data.area_metrics(area_id), session_id=session_id)
 
 
@@ -127,8 +137,7 @@ def area_map_layers(
     layer_types: str = Query('choropleth,marker'),
     metric_names: str = Query('crime_index,entertainment,convenience'),
 ):
-    if session_store.get(session_id) is None:
-        error_envelope('VALIDATION_ERROR', 'session_id not found', session_id=session_id, status_code=404)
+    ensure_session_exists(session_id)
     try:
         with httpx.Client(timeout=2.0) as client:
             response = client.get(
@@ -145,22 +154,19 @@ def area_map_layers(
 
 @router.get('/areas/{area_id}/weather', response_model=ApiEnvelope[WeatherResponse])
 def area_weather(area_id: str, session_id: str = Query(...), hours: int = Query(6, ge=1, le=24)):
-    if session_store.get(session_id) is None:
-        error_envelope('VALIDATION_ERROR', 'session_id not found', session_id=session_id, status_code=404)
+    ensure_session_exists(session_id)
     return envelope(mock_data.weather(area_id, hours=hours), session_id=session_id)
 
 
 @router.post('/transit/realtime', response_model=ApiEnvelope[TransitRealtimeResponse])
 def realtime_transit(request: TransitRealtimeRequest):
-    if session_store.get(request.session_id) is None:
-        error_envelope('VALIDATION_ERROR', 'session_id not found', session_id=request.session_id, status_code=404)
+    ensure_session_exists(request.session_id)
     return envelope(mock_data.transit(request.origin, request.destination, request.mode), session_id=request.session_id)
 
 
 @router.get('/sessions/{session_id}/recommendations')
 def recommendations(session_id: str):
-    if session_store.get(session_id) is None:
-        error_envelope('VALIDATION_ERROR', 'session_id not found', session_id=session_id, status_code=404)
+    ensure_session_exists(session_id)
     return envelope({'recommendations': []}, session_id=session_id)
 
 

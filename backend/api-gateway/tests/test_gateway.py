@@ -1,5 +1,8 @@
 from fastapi.testclient import TestClient
 from app.main import app
+from app.core.config import settings
+
+settings.use_remote_orchestrator = False
 
 client = TestClient(app)
 
