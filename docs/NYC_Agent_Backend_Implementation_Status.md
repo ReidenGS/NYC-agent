@@ -19,7 +19,7 @@
 | `mcp-entertainment` | `8024` | 娱乐设施 MCP，封装 entertainment SQL domain | 已实现为 `mcp-sql` 薄代理，强制 `domain=entertainment` |
 | `mcp-transit` | `8025` | Transit 固定工具 MCP，读取站点维表、按需拉取 MTA GTFS-RT/Bus Time、查询实时预测表并生成短期通勤缓存 | 已实现站点匹配、下一班车实时刷新与查询、简化通勤估算与缓存 |
 | `mcp-profile` | `8026` | Profile MCP 工具服务，负责 session/profile 的读写 | 已实现 Postgres 优先持久化，数据库不可用时自动 memory fallback |
-| `mcp-weather` | `8027` | Weather 固定工具 MCP，调用 National Weather Service API | 已实现当前天气和小时预报 |
+| `mcp-weather` | `8027` | Weather 固定工具 MCP，从 `app_area_dimension` 解析区域坐标并调用 National Weather Service API | 已实现当前天气和小时预报 |
 | `data-sync-service` | `8030` | 数据同步与入库任务 | Claude 已完成主要同步任务，继续沿用同一 Postgres |
 | `postgres` | `5432` | PostGIS 数据库 | 统一数据库，不要为新服务另起 DB |
 | `redis` | `6379` | 缓存/短期状态预留 | 已在 compose 中存在 |
@@ -254,7 +254,7 @@ SQL planner 模式：
 当前限制：
 
 - NWS 不需要 API key，但必须配置描述性 `NWS_USER_AGENT`。
-- 当前用 seed 区域坐标解析天气；后续可改为从 `app_area_dimension` 计算 centroid。
+- 天气坐标优先来自 `app_area_dimension.geom` 的 `ST_PointOnSurface`；如果数据库不可用或没有该区域几何，才 fallback 到 seed 坐标。
 - 天气失败不阻塞租房/通勤/区域画像核心回答。
 
 ### `mcp-profile`
@@ -331,6 +331,5 @@ profile.budget.max = 3000
 后续继续落地时建议按这个顺序：
 
 1. 如果需要更准通勤时间，同步 GTFS static `trips/stop_times/routes` 后，把当前距离速度估算替换为站序/换乘计算。
-2. 把 `mcp-weather` 的 seed 坐标解析替换为从 `app_area_dimension` 计算 centroid。
-3. 为 `housing-agent` / `neighborhood-agent` 增加 LLM planner 的 mock 单元测试，覆盖 JSON 解析失败和 validator 拒绝后的 fallback。
-4. 根据需要把 `mcp-safety`、`mcp-amenity`、`mcp-entertainment` 从薄代理逐步扩展为包含地图图层/点位缓存的领域 MCP。
+2. 为 `housing-agent` / `neighborhood-agent` 增加 LLM planner 的 mock 单元测试，覆盖 JSON 解析失败和 validator 拒绝后的 fallback。
+3. 根据需要把 `mcp-safety`、`mcp-amenity`、`mcp-entertainment` 从薄代理逐步扩展为包含地图图层/点位缓存的领域 MCP。

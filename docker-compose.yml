@@ -307,8 +307,13 @@ services:
       dockerfile: ./services/mcp-weather/Dockerfile
     container_name: nyc_agent_mcp_weather
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       PYTHONPATH: /app/shared
+      DATABASE_URL_SYNC: ${DATABASE_URL_SYNC_DOCKER:-postgresql+psycopg://nyc_agent:nyc_agent_password@postgres:5432/nyc_agent}
+      WEATHER_STATEMENT_TIMEOUT_MS: ${WEATHER_STATEMENT_TIMEOUT_MS:-3000}
       NWS_USER_AGENT: ${NWS_USER_AGENT:-NYC-agent-demo/0.1 (contact@example.com)}
     ports:
       - "${MCP_WEATHER_PORT:-8027}:8027"

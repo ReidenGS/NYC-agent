@@ -5,11 +5,13 @@ from typing import Any
 import httpx
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
+from sqlalchemy import create_engine, text
 
 from app.config import settings
 from nyc_agent_shared.time import now_iso
 
 app = FastAPI(title="NYC Agent MCP Weather", version="0.1.0")
+engine = create_engine(settings.sqlalchemy_database_url, pool_pre_ping=True, pool_size=2, max_overflow=1)
 
 AREA_COORDS = {
     "QN0101": {"area_name": "Astoria", "latitude": 40.7644, "longitude": -73.9235},
@@ -18,6 +20,28 @@ AREA_COORDS = {
     "BK0102": {"area_name": "Greenpoint", "latitude": 40.7306, "longitude": -73.9540},
     "MN0101": {"area_name": "Midtown", "latitude": 40.7549, "longitude": -73.9840},
 }
+
+AREA_COORDS_SQL = text(
+    """
+    SELECT area_id, area_name,
+           ST_Y(ST_PointOnSurface(geom)::geometry) AS latitude,
+           ST_X(ST_PointOnSurface(geom)::geometry) AS longitude
+    FROM app_area_dimension
+    WHERE geom IS NOT NULL
+      AND (
+        (:area_id IS NOT NULL AND area_id = :area_id)
+        OR (:area_name IS NOT NULL AND area_name ILIKE :area_name_like)
+      )
+    ORDER BY
+      CASE
+        WHEN :area_id IS NOT NULL AND area_id = :area_id THEN 0
+        WHEN :area_name IS NOT NULL AND lower(area_name) = lower(:area_name) THEN 1
+        ELSE 2
+      END,
+      area_name ASC
+    LIMIT 1
+    """
+)
 
 
 class ToolRequest(BaseModel):
@@ -38,16 +62,49 @@ def mcp_response(status: str, tool: str, data: Any, *, error: dict[str, Any] | N
     }
 
 
+def resolve_coords_from_db(args: dict[str, Any]) -> dict[str, Any] | None:
+    area_id = str(args.get("area_id") or "").strip() or None
+    area_name = str(args.get("area_name") or "").strip() or None
+    if not area_id and not area_name:
+        return None
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"SET LOCAL statement_timeout = {int(settings.weather_statement_timeout_ms)}"))
+            row = conn.execute(
+                AREA_COORDS_SQL,
+                {
+                    "area_id": area_id,
+                    "area_name": area_name,
+                    "area_name_like": f"%{area_name}%" if area_name else None,
+                },
+            ).first()
+    except Exception:
+        return None
+    if not row:
+        return None
+    data = dict(row._mapping)
+    return {
+        "area_id": data.get("area_id"),
+        "area_name": data.get("area_name"),
+        "latitude": float(data["latitude"]),
+        "longitude": float(data["longitude"]),
+        "coord_source": "app_area_dimension.geom",
+    }
+
+
 def resolve_coords(args: dict[str, Any]) -> dict[str, Any] | None:
     if args.get("latitude") is not None and args.get("longitude") is not None:
-        return {"latitude": float(args["latitude"]), "longitude": float(args["longitude"]), "area_name": args.get("area_name")}
+        return {"latitude": float(args["latitude"]), "longitude": float(args["longitude"]), "area_name": args.get("area_name"), "coord_source": "request"}
+    db_coords = resolve_coords_from_db(args)
+    if db_coords:
+        return db_coords
     area_id = args.get("area_id")
     if area_id and area_id in AREA_COORDS:
-        return AREA_COORDS[area_id]
+        return {**AREA_COORDS[area_id], "area_id": area_id, "coord_source": "seed_fallback"}
     area_name = str(args.get("area_name") or "").lower()
     for coords in AREA_COORDS.values():
         if area_name and area_name in coords["area_name"].lower():
-            return coords
+            return {**coords, "coord_source": "seed_fallback"}
     return None
 
 
@@ -66,7 +123,13 @@ def health() -> dict[str, str]:
 
 @app.get("/ready")
 def ready() -> dict[str, Any]:
-    return {"status": "ok", "dependencies": {"nws": "on_demand"}}
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("SELECT 1"))
+        db = "ok"
+    except Exception as exc:
+        db = f"unavailable: {exc}"
+    return {"status": "ok", "dependencies": {"nws": "on_demand", "postgres": db}}
 
 
 @app.get("/tools")
@@ -93,6 +156,7 @@ def get_current_weather(request: ToolRequest) -> dict[str, Any]:
         "area_name": coords.get("area_name"),
         "latitude": coords["latitude"],
         "longitude": coords["longitude"],
+        "coord_source": coords.get("coord_source"),
         "temperature": first.get("temperature"),
         "temperature_unit": first.get("temperatureUnit"),
         "short_forecast": first.get("shortForecast"),
@@ -115,4 +179,4 @@ def get_hourly_forecast(request: ToolRequest) -> dict[str, Any]:
         periods = hourly["properties"].get("periods", [])[:hours]
     except Exception as exc:
         return mcp_response("dependency_failed", "get_hourly_forecast", None, error={"code": "NWS_API_ERROR", "message": str(exc.__class__.__name__), "retryable": True})
-    return mcp_response("success" if periods else "no_data", "get_hourly_forecast", {"area_name": coords.get("area_name"), "periods": periods})
+    return mcp_response("success" if periods else "no_data", "get_hourly_forecast", {"area_name": coords.get("area_name"), "latitude": coords["latitude"], "longitude": coords["longitude"], "coord_source": coords.get("coord_source"), "periods": periods})
