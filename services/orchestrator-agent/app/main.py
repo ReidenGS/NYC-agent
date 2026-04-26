@@ -118,6 +118,21 @@ def _transit_a2a(task_type: str, trace: str, session_id: str | None, payload: di
         return response.json()
 
 
+def _weather_a2a(task_type: str, trace: str, session_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
+    req = A2ARequest(
+        trace_id=trace,
+        session_id=session_id,
+        source_agent="orchestrator-agent",
+        target_agent="weather-agent",
+        task_type=task_type,
+        payload=payload,
+    )
+    with httpx.Client(timeout=settings.request_timeout_seconds) as client:
+        response = client.post(f"{settings.weather_agent_url.rstrip('/')}/a2a", json=req.model_dump())
+        response.raise_for_status()
+        return response.json()
+
+
 def _find_area(message: str) -> dict[str, str] | None:
     lower = message.lower()
     for alias, area in AREA_ALIASES.items():
@@ -249,6 +264,30 @@ def _build_transit_payload(message: str) -> dict[str, Any]:
     return {"domain_user_query": message, "slots": slots, "domain_context": {"departure_count": 2, "cache_ttl_seconds": 60}}
 
 
+def _is_weather_query(message: str) -> bool:
+    lower = message.lower()
+    return any(k in lower or k in message for k in ["天气", "下雨", "气温", "weather", "rain", "temperature", "forecast"])
+
+
+def _weather_task_type(message: str) -> str:
+    lower = message.lower()
+    if any(k in lower or k in message for k in ["小时", "几点", "forecast", "hourly", "今晚", "明天"]):
+        return "weather.hourly_forecast"
+    return "weather.current"
+
+
+def _build_weather_payload(message: str, profile: dict[str, Any], area: dict[str, str] | None) -> dict[str, Any]:
+    active_area = area or profile.get("target_area") or {}
+    return {
+        "domain_user_query": message,
+        "slots": {
+            "area_id": {"value": active_area.get("area_id") or profile.get("target_area_id"), "source": "user_explicit" if area else "session_memory", "confidence": 0.95 if area else 0.85},
+            "area_name": {"value": active_area.get("area_name"), "source": "user_explicit" if area else "session_memory", "confidence": 0.95 if area else 0.85},
+        },
+        "domain_context": {"hours": 6},
+    }
+
+
 def _needs_area(message: str) -> bool:
     lower = message.lower()
     keywords = ["安全", "犯罪", "房租", "租金", "预算", "附近", "这个区", "区域", "便利", "娱乐", "超市", "酒吧", "rent", "housing", "safe", "crime", "nearby", "area", "amenity"]
@@ -290,8 +329,15 @@ def ready() -> dict[str, Any]:
         transit = "ok"
     except Exception as exc:
         transit = f"unavailable: {exc}"
-    status = "ok" if profile == "ok" and housing == "ok" and neighborhood == "ok" and transit == "ok" else "degraded"
-    return {"status": status, "dependencies": {"profile-agent": profile, "housing-agent": housing, "neighborhood-agent": neighborhood, "transit-agent": transit}}
+    try:
+        with httpx.Client(timeout=settings.request_timeout_seconds) as client:
+            response = client.get(f"{settings.weather_agent_url.rstrip('/')}/ready")
+            response.raise_for_status()
+        weather = "ok"
+    except Exception as exc:
+        weather = f"unavailable: {exc}"
+    status = "ok" if profile == "ok" and housing == "ok" and neighborhood == "ok" and transit == "ok" and weather == "ok" else "degraded"
+    return {"status": status, "dependencies": {"profile-agent": profile, "housing-agent": housing, "neighborhood-agent": neighborhood, "transit-agent": transit, "weather-agent": weather}}
 
 
 @app.get("/debug/prompts")
@@ -377,7 +423,31 @@ def chat(request: ChatRequest) -> dict[str, Any]:
     area_name = (active_area or {}).get("area_name", "当前区域")
     sources = [{"name": "orchestrator-agent rule fallback", "type": "system", "updated_at": now_iso()}]
 
-    if _is_transit_query(message):
+    if _is_weather_query(message):
+        weather_response = _weather_a2a(_weather_task_type(message), trace, request.session_id, _build_weather_payload(message, profile, area))
+        if weather_response.get("status") == "clarification_required":
+            answer = weather_response.get("payload", {}).get("clarification") or "你想查哪个区域的天气？"
+            next_action = "ask_follow_up"
+            missing = weather_response.get("payload", {}).get("missing_slots", [])
+            sources = [{"name": "weather-agent", "type": "a2a", "updated_at": now_iso()}]
+        elif weather_response.get("status") in {"dependency_failed", "no_data"}:
+            answer = "当前天气工具没有返回可用数据。天气不影响租房核心判断，你可以稍后再查或继续问租金、安全、通勤。"
+            next_action = "respond_final"
+            missing = []
+            sources = [{"name": "mcp-weather", "type": "fixed_tool", "updated_at": now_iso()}]
+        else:
+            result = weather_response.get("payload", {}).get("weather_result", {})
+            metrics = result.get("derived_metrics") or {}
+            if result.get("weather_result_type") == "hourly_forecast":
+                periods = metrics.get("periods") or []
+                first = periods[0] if periods else {}
+                answer = f"{area_name} 接下来天气：{first.get('shortForecast')}，温度 {first.get('temperature')}{first.get('temperatureUnit')}。"
+            else:
+                answer = f"{area_name} 当前天气：{metrics.get('short_forecast')}，温度 {metrics.get('temperature')}{metrics.get('temperature_unit')}，风速 {metrics.get('wind_speed')}。"
+            next_action = "respond_final"
+            missing = []
+            sources = [{"name": "weather-agent", "type": "a2a", "updated_at": now_iso()}, {"name": "mcp-weather", "type": "fixed_tool", "updated_at": now_iso()}]
+    elif _is_transit_query(message):
         task_type = _transit_task_type(message)
         transit_response = _transit_a2a(task_type, trace, request.session_id, _build_transit_payload(message))
         if transit_response.get("status") == "clarification_required":

@@ -12,9 +12,11 @@
 | `neighborhood-agent` | `8012` | 区域画像 Agent，负责安全、便利设施、娱乐设施和区域概览 SQL plan | 已接入 Orchestrator 的安全/便利/娱乐问题 |
 | `transit-agent` | `8013` | 通勤领域 Agent，负责下一班车、实时/缓存通勤时间工具调用 | 已接入 Orchestrator 的地铁/公交/通勤问题 |
 | `profile-agent` | `8014` | 用户画像状态 Agent，负责把 Orchestrator 的 profile 任务转成 MCP 工具调用 | 已实现 A2A `/a2a` 入口 |
+| `weather-agent` | `8015` | 天气领域 Agent，负责当前天气和小时预报工具调用 | 已接入 Orchestrator 的天气问题 |
 | `mcp-sql` | `8020` | 通用只读 SQL MCP，按 domain 白名单校验并执行 SQL | 已支持 `housing/safety/amenity/entertainment` 表白名单，当前 housing 已使用 |
 | `mcp-transit` | `8025` | Transit 固定工具 MCP，读取站点维表、实时预测表和通勤缓存表 | 已实现站点匹配、下一班车查询、通勤缓存查询 |
 | `mcp-profile` | `8026` | Profile MCP 工具服务，负责 session/profile 的读写 | 已实现 MCP-style HTTP tool endpoint，当前为内存存储 |
+| `mcp-weather` | `8027` | Weather 固定工具 MCP，调用 National Weather Service API | 已实现当前天气和小时预报 |
 | `data-sync-service` | `8030` | 数据同步与入库任务 | Claude 已完成主要同步任务，继续沿用同一 Postgres |
 | `postgres` | `5432` | PostGIS 数据库 | 统一数据库，不要为新服务另起 DB |
 | `redis` | `6379` | 缓存/短期状态预留 | 已在 compose 中存在 |
@@ -31,6 +33,8 @@ Frontend
         -> mcp-sql
       -> transit-agent
         -> mcp-transit
+      -> weather-agent
+        -> mcp-weather
       -> profile-agent
         -> mcp-profile
 ```
@@ -51,8 +55,10 @@ MCP_PROFILE_URL_DOCKER=http://mcp-profile:8026
 HOUSING_AGENT_URL_DOCKER=http://housing-agent:8011
 NEIGHBORHOOD_AGENT_URL_DOCKER=http://neighborhood-agent:8012
 TRANSIT_AGENT_URL_DOCKER=http://transit-agent:8013
+WEATHER_AGENT_URL_DOCKER=http://weather-agent:8015
 MCP_SQL_URL_DOCKER=http://mcp-sql:8020
 MCP_TRANSIT_URL_DOCKER=http://mcp-transit:8025
+MCP_WEATHER_URL_DOCKER=http://mcp-weather:8027
 DATABASE_URL_SQL_DOCKER=postgresql+psycopg://nyc_agent:nyc_agent_password@postgres:5432/nyc_agent
 ```
 
@@ -168,6 +174,38 @@ DATABASE_URL_SQL_DOCKER=postgresql+psycopg://nyc_agent:nyc_agent_password@postgr
 - 如果实时预测表或缓存表为空，会返回 `no_data`，不会编造车次。
 - 后续可以在 `mcp-transit` 内部补 GTFS-RT / Bus Time 拉取，不需要改 Agent A2A 协议。
 
+### `weather-agent`
+
+| Method | Path | 用途 |
+| --- | --- | --- |
+| `GET` | `/health` | 服务健康检查 |
+| `GET` | `/ready` | 检查 `mcp-weather` 是否可用 |
+| `GET` | `/debug/prompts` | 查看 weather prompt |
+| `POST` | `/a2a` | 接收 Orchestrator 的 weather A2A 任务 |
+
+当前支持：
+
+| task_type | 能力 |
+| --- | --- |
+| `weather.current` | 查询当前/最近小时天气 |
+| `weather.hourly_forecast` | 查询未来小时级天气 |
+
+### `mcp-weather`
+
+| Method | Path | 用途 |
+| --- | --- | --- |
+| `GET` | `/health` | 服务健康检查 |
+| `GET` | `/ready` | NWS 按需调用状态 |
+| `GET` | `/tools` | 查看可用工具 |
+| `POST` | `/tools/get_current_weather` | 调用 NWS hourly forecast 返回最近小时天气 |
+| `POST` | `/tools/get_hourly_forecast` | 调用 NWS hourly forecast 返回未来小时预报 |
+
+当前限制：
+
+- NWS 不需要 API key，但必须配置描述性 `NWS_USER_AGENT`。
+- 当前用 seed 区域坐标解析天气；后续可改为从 `app_area_dimension` 计算 centroid。
+- 天气失败不阻塞租房/通勤/区域画像核心回答。
+
 ### `mcp-profile`
 
 | Method | Path | 用途 |
@@ -189,7 +227,7 @@ DATABASE_URL_SQL_DOCKER=postgresql+psycopg://nyc_agent:nyc_agent_password@postgr
 
 ```bash
 cp .env.example .env
-docker compose up -d postgres redis mcp-profile profile-agent mcp-sql housing-agent neighborhood-agent mcp-transit transit-agent orchestrator-agent api-gateway
+docker compose up -d postgres redis mcp-profile profile-agent mcp-sql housing-agent neighborhood-agent mcp-transit transit-agent mcp-weather weather-agent orchestrator-agent api-gateway
 ```
 
 仅本机调试三个 Agent 服务时，可以使用：

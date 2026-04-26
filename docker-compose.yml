@@ -205,6 +205,43 @@ services:
       timeout: 5s
       retries: 5
 
+  mcp-weather:
+    build:
+      context: .
+      dockerfile: ./services/mcp-weather/Dockerfile
+    container_name: nyc_agent_mcp_weather
+    restart: unless-stopped
+    environment:
+      PYTHONPATH: /app/shared
+      NWS_USER_AGENT: ${NWS_USER_AGENT:-NYC-agent-demo/0.1 (contact@example.com)}
+    ports:
+      - "${MCP_WEATHER_PORT:-8027}:8027"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8027/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  weather-agent:
+    build:
+      context: .
+      dockerfile: ./services/weather-agent/Dockerfile
+    container_name: nyc_agent_weather_agent
+    restart: unless-stopped
+    depends_on:
+      mcp-weather:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /app/shared
+      MCP_WEATHER_URL: ${MCP_WEATHER_URL_DOCKER:-http://mcp-weather:8027}
+    ports:
+      - "${WEATHER_AGENT_PORT:-8015}:8015"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8015/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   orchestrator-agent:
     build:
       context: .
@@ -220,12 +257,15 @@ services:
         condition: service_healthy
       transit-agent:
         condition: service_healthy
+      weather-agent:
+        condition: service_healthy
     environment:
       PYTHONPATH: /app/shared
       PROFILE_AGENT_URL: ${PROFILE_AGENT_URL_DOCKER:-http://profile-agent:8014}
       HOUSING_AGENT_URL: ${HOUSING_AGENT_URL_DOCKER:-http://housing-agent:8011}
       NEIGHBORHOOD_AGENT_URL: ${NEIGHBORHOOD_AGENT_URL_DOCKER:-http://neighborhood-agent:8012}
       TRANSIT_AGENT_URL: ${TRANSIT_AGENT_URL_DOCKER:-http://transit-agent:8013}
+      WEATHER_AGENT_URL: ${WEATHER_AGENT_URL_DOCKER:-http://weather-agent:8015}
     ports:
       - "${ORCHESTRATOR_AGENT_PORT:-8010}:8010"
     healthcheck:
