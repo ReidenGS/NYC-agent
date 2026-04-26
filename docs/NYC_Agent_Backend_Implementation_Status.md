@@ -121,6 +121,7 @@ SQL planner 模式：
 - LLM 输出必须是严格 JSON，并通过轻量 plan schema 校验。
 - `mcp-sql` 仍是最终安全边界，会校验 SQL 白名单、LIMIT、敏感表和只读规则。
 - LLM 请求失败、输出不合格、API key 为空时，自动 fallback 到 deterministic SQL plan。
+- 已有单元测试覆盖 LLM 生成 `SELECT *` 时自动 fallback。
 
 ### `neighborhood-agent`
 
@@ -146,6 +147,7 @@ SQL planner 模式：
 - LLM 输出必须是严格 JSON，并通过轻量 plan schema 校验。
 - `mcp-sql` 仍是最终安全边界，会按 `safety/amenity/entertainment` domain 白名单执行校验。
 - LLM 请求失败、输出不合格、API key 为空时，自动 fallback 到 deterministic SQL plan。
+- 已有单元测试覆盖 LLM 漏写 `LIMIT` 时自动 fallback。
 
 ### `mcp-sql`
 
@@ -331,5 +333,4 @@ profile.budget.max = 3000
 后续继续落地时建议按这个顺序：
 
 1. 如果需要更准通勤时间，同步 GTFS static `trips/stop_times/routes` 后，把当前距离速度估算替换为站序/换乘计算。
-2. 为 `housing-agent` / `neighborhood-agent` 增加 LLM planner 的 mock 单元测试，覆盖 JSON 解析失败和 validator 拒绝后的 fallback。
-3. 根据需要把 `mcp-safety`、`mcp-amenity`、`mcp-entertainment` 从薄代理逐步扩展为包含地图图层/点位缓存的领域 MCP。
+2. 根据需要把 `mcp-safety`、`mcp-amenity`、`mcp-entertainment` 从薄代理逐步扩展为包含地图图层/点位缓存的领域 MCP。
