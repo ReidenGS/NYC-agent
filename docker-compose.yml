@@ -388,6 +388,7 @@ services:
         condition: service_healthy
     environment:
       USE_REMOTE_ORCHESTRATOR: ${USE_REMOTE_ORCHESTRATOR:-true}
+      ALLOW_MOCK_FALLBACK: ${ALLOW_MOCK_FALLBACK:-false}
       ORCHESTRATOR_AGENT_URL: ${ORCHESTRATOR_AGENT_URL_DOCKER:-http://orchestrator-agent:8010}
       DATA_SYNC_BASE_URL: ${DATA_SYNC_BASE_URL_DOCKER:-http://data-sync-service:8030}
       CORS_ORIGINS: ${API_GATEWAY_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}

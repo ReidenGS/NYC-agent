@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     data_sync_base_url: str = 'http://localhost:8030'
     orchestrator_agent_url: str = 'http://localhost:8010'
     use_remote_orchestrator: bool = True
+    allow_mock_fallback: bool = False
     agent_request_timeout_seconds: float = 4.0
 
     @property

@@ -74,8 +74,9 @@ def create_session(request: SessionCreateRequest | None = None):
         try:
             data = remote_orchestrator.create_session(request.model_dump() if request else {})
             return envelope(SessionCreateResponse.model_validate(data), session_id=data['session_id'])
-        except Exception:
-            pass
+        except Exception as exc:
+            if not settings.allow_mock_fallback:
+                error_envelope('ORCHESTRATOR_UNAVAILABLE', f'orchestrator-agent unavailable: {exc}', status_code=503, retryable=True)
     profile = session_store.create()
     return envelope(SessionCreateResponse(session_id=profile.session_id, profile_snapshot=profile), session_id=profile.session_id)
 
@@ -85,8 +86,9 @@ def get_profile(session_id: str):
     if settings.use_remote_orchestrator:
         try:
             return envelope(ProfileSnapshot.model_validate(remote_orchestrator.get_profile(session_id)), session_id=session_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            if not settings.allow_mock_fallback:
+                error_envelope('ORCHESTRATOR_UNAVAILABLE', f'orchestrator-agent unavailable: {exc}', session_id=session_id, status_code=503, retryable=True)
     profile = session_store.get(session_id)
     if profile is None:
         error_envelope('VALIDATION_ERROR', 'session_id not found', session_id=session_id, status_code=404)
@@ -98,8 +100,9 @@ def patch_profile(session_id: str, patch: ProfilePatchRequest):
     if settings.use_remote_orchestrator:
         try:
             return envelope(ProfileSnapshot.model_validate(remote_orchestrator.patch_profile(session_id, patch.model_dump(exclude_none=True))), session_id=session_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            if not settings.allow_mock_fallback:
+                error_envelope('ORCHESTRATOR_UNAVAILABLE', f'orchestrator-agent unavailable: {exc}', session_id=session_id, status_code=503, retryable=True)
     try:
         profile = session_store.patch(session_id, patch)
     except KeyError:
@@ -115,8 +118,9 @@ def chat(request: ChatRequest):
         try:
             data = remote_orchestrator.chat(request.model_dump())
             return envelope(ChatResponseData.model_validate(data), session_id=request.session_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            if not settings.allow_mock_fallback:
+                error_envelope('ORCHESTRATOR_UNAVAILABLE', f'orchestrator-agent unavailable: {exc}', session_id=request.session_id, status_code=503, retryable=True)
     try:
         data = orchestrator.handle_chat(request)
     except KeyError:
@@ -127,6 +131,8 @@ def chat(request: ChatRequest):
 @router.get('/areas/{area_id}/metrics', response_model=ApiEnvelope[AreaMetricsResponse])
 def area_metrics(area_id: str, session_id: str = Query(...)):
     ensure_session_exists(session_id)
+    if not settings.allow_mock_fallback:
+        error_envelope('REAL_ENDPOINT_NOT_IMPLEMENTED', 'area metrics direct endpoint is not wired to a real data service yet; use /chat or implement a metrics query service.', session_id=session_id, status_code=501)
     return envelope(mock_data.area_metrics(area_id), session_id=session_id)
 
 
@@ -147,20 +153,25 @@ def area_map_layers(
             response.raise_for_status()
             data = MapLayersResponse.model_validate(response.json())
             return envelope(data, session_id=session_id)
-    except Exception:
-        pass
+    except Exception as exc:
+        if not settings.allow_mock_fallback:
+            error_envelope('DATA_SYNC_UNAVAILABLE', f'data-sync map layer endpoint unavailable: {exc}', session_id=session_id, status_code=503, retryable=True)
     return envelope(mock_data.map_layers(area_id), session_id=session_id)
 
 
 @router.get('/areas/{area_id}/weather', response_model=ApiEnvelope[WeatherResponse])
 def area_weather(area_id: str, session_id: str = Query(...), hours: int = Query(6, ge=1, le=24)):
     ensure_session_exists(session_id)
+    if not settings.allow_mock_fallback:
+        error_envelope('REAL_ENDPOINT_NOT_IMPLEMENTED', 'area weather direct endpoint is not wired to mcp-weather yet; use /chat weather queries.', session_id=session_id, status_code=501)
     return envelope(mock_data.weather(area_id, hours=hours), session_id=session_id)
 
 
 @router.post('/transit/realtime', response_model=ApiEnvelope[TransitRealtimeResponse])
 def realtime_transit(request: TransitRealtimeRequest):
     ensure_session_exists(request.session_id)
+    if not settings.allow_mock_fallback:
+        error_envelope('REAL_ENDPOINT_NOT_IMPLEMENTED', 'transit direct endpoint is not wired to transit-agent yet; use /chat transit queries.', session_id=request.session_id, status_code=501)
     return envelope(mock_data.transit(request.origin, request.destination, request.mode), session_id=request.session_id)
 
 
