@@ -35,6 +35,7 @@ MVP 服务：
 - `weather-agent`：目标区域当前天气、小时级天气预报、指定时刻天气问答
 - `profile-agent`：槽位、权重、会话状态
 - `mcp-housing`：RentCast、ZORI/HUD、房源查询工具
+- `mcp-sql`：通用只读 SQL 校验与执行工具，按 domain 白名单限制 housing/safety/amenity/entertainment 可访问表
 - `mcp-safety`：NYPD 犯罪数据、安全指标、安全地图图层工具
 - `mcp-amenity`：便利设施分类、便利设施地图点位工具
 - `mcp-entertainment`：娱乐设施分类、娱乐设施地图点位工具

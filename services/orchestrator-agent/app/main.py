@@ -73,6 +73,21 @@ def _profile_a2a(task_type: str, trace: str, session_id: str | None, payload: di
     return body["payload"]["profile_snapshot"]
 
 
+def _housing_a2a(task_type: str, trace: str, session_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
+    req = A2ARequest(
+        trace_id=trace,
+        session_id=session_id,
+        source_agent="orchestrator-agent",
+        target_agent="housing-agent",
+        task_type=task_type,
+        payload=payload,
+    )
+    with httpx.Client(timeout=settings.request_timeout_seconds) as client:
+        response = client.post(f"{settings.housing_agent_url.rstrip('/')}/a2a", json=req.model_dump())
+        response.raise_for_status()
+        return response.json()
+
+
 def _find_area(message: str) -> dict[str, str] | None:
     lower = message.lower()
     for alias, area in AREA_ALIASES.items():
@@ -99,6 +114,33 @@ def _extract_bedroom(message: str) -> str | None:
     return None
 
 
+def _housing_task_type(message: str) -> str:
+    lower = message.lower()
+    if any(k in lower or k in message for k in ["listing", "房源", "公寓", "apartment", "有哪些房"]):
+        return "housing.listing_search"
+    return "housing.rent_query"
+
+
+def _build_housing_payload(message: str, profile: dict[str, Any], area: dict[str, str] | None, budget: int | None) -> dict[str, Any]:
+    active_area = area or profile.get("target_area") or {}
+    profile_budget = profile.get("budget") or {}
+    budget_value = budget or profile_budget.get("max")
+    slots: dict[str, Any] = {
+        "area_id": {"value": active_area.get("area_id") or profile.get("target_area_id"), "source": "user_explicit" if area else "session_memory", "confidence": 0.95 if area else 0.85},
+        "area_name": {"value": active_area.get("area_name"), "source": "user_explicit" if area else "session_memory", "confidence": 0.95 if area else 0.85},
+    }
+    bedroom = _extract_bedroom(message)
+    if bedroom:
+        slots["bedroom_type"] = {"value": bedroom, "source": "user_explicit", "confidence": 0.95}
+    if budget_value:
+        slots["budget_monthly"] = {"value": float(budget_value), "source": "user_explicit" if budget else "session_memory", "confidence": 0.95 if budget else 0.85}
+    return {
+        "domain_user_query": message,
+        "slots": slots,
+        "domain_context": {"currency": "USD", "listing_limit": 5},
+    }
+
+
 def _needs_area(message: str) -> bool:
     lower = message.lower()
     keywords = ["安全", "犯罪", "房租", "租金", "预算", "附近", "这个区", "区域", "rent", "housing", "safe", "crime", "nearby", "area"]
@@ -119,7 +161,15 @@ def ready() -> dict[str, Any]:
         profile = "ok"
     except Exception as exc:
         profile = f"unavailable: {exc}"
-    return {"status": "ok" if profile == "ok" else "degraded", "dependencies": {"profile-agent": profile}}
+    try:
+        with httpx.Client(timeout=settings.request_timeout_seconds) as client:
+            response = client.get(f"{settings.housing_agent_url.rstrip('/')}/ready")
+            response.raise_for_status()
+        housing = "ok"
+    except Exception as exc:
+        housing = f"unavailable: {exc}"
+    status = "ok" if profile == "ok" and housing == "ok" else "degraded"
+    return {"status": status, "dependencies": {"profile-agent": profile, "housing-agent": housing}}
 
 
 @app.get("/debug/prompts")
@@ -205,17 +255,50 @@ def chat(request: ChatRequest) -> dict[str, Any]:
     area_name = (active_area or {}).get("area_name", "当前区域")
     sources = [{"name": "orchestrator-agent rule fallback", "type": "system", "updated_at": now_iso()}]
 
-    if any(k in message or k in lower for k in ["预算", "房租", "租金", "rent", "1b", "1br"]):
-        bedroom = _extract_bedroom(message) or "1br"
-        budget_value = budget or ((profile.get("budget") or {}).get("max"))
-        if not budget_value and "预算" in message:
-            answer = f"我需要知道你的月租预算，才能判断 {area_name} 的 {bedroom} 是否合适。"
+    if any(k in message or k in lower for k in ["预算", "房租", "租金", "rent", "1b", "1br", "listing", "房源", "公寓"]):
+        housing_payload = _build_housing_payload(message, profile, area, budget)
+        housing_response = _housing_a2a(_housing_task_type(message), trace, request.session_id, housing_payload)
+        if housing_response.get("status") == "clarification_required":
+            clarification = housing_response.get("payload", {}).get("clarification") or "我还需要一个租房相关条件。"
+            answer = clarification
             next_action = "ask_follow_up"
-            missing = ["budget_monthly"]
-        else:
-            answer = f"我先按 {area_name} 的 {bedroom} 来看。当前 housing-agent/MCP SQL 链路还在接入中；已从 profile 解析到预算为 ${budget_value}，下一步会交给 housing-agent 生成 SQL 查询租金区间和预算内房源。"
+            missing = housing_response.get("payload", {}).get("missing_slots", [])
+            sources = [{"name": "housing-agent", "type": "a2a", "updated_at": now_iso()}]
+        elif housing_response.get("status") == "unsupported_data_request":
+            payload = housing_response.get("payload", {})
+            answer = f"当前数据库暂时不能回答这个租房问题：{payload.get('unsupported_reason', '缺少对应字段')} {payload.get('suggested_alternative', '')}".strip()
             next_action = "respond_final"
             missing = []
+            sources = [{"name": "housing-agent", "type": "a2a", "updated_at": now_iso()}]
+        elif housing_response.get("status") == "no_data":
+            result = housing_response.get("payload", {}).get("housing_result", {})
+            answer = f"当前数据库中没有找到 {area_name} 的匹配租房数据。{result.get('suggested_alternative', '可以先运行租金同步任务或换一个户型查询。')}"
+            next_action = "respond_final"
+            missing = []
+            sources = [{"name": "mcp-sql", "type": "sql", "updated_at": now_iso()}]
+        else:
+            result = housing_response.get("payload", {}).get("housing_result", {})
+            metrics = result.get("derived_metrics", {})
+            context = result.get("data_context", {})
+            bedroom = metrics.get("bedroom_type") or _extract_bedroom(message) or "该户型"
+            if result.get("housing_result_type") == "budget_fit":
+                answer = (
+                    f"{area_name} 的 {bedroom} 当前查询结果："
+                    f"最低约 ${metrics.get('rent_min')}, 中位数约 ${metrics.get('rent_median')}, 最高约 ${metrics.get('rent_max')}。"
+                    f"你的预算是 ${metrics.get('budget_monthly')}，预算匹配判断为 {metrics.get('budget_fit') or 'unknown'}。"
+                    f"数据库中找到 {metrics.get('matching_listing_count', 0)} 条预算内 active 房源。"
+                )
+            else:
+                answer = (
+                    f"{area_name} 的租金数据已查到。"
+                    f"数据来源类型：{context.get('source_type')}；"
+                    f"如果是具体户型，租金区间约为 ${metrics.get('rent_min')} - ${metrics.get('rent_max')}，中位数约 ${metrics.get('rent_median')}。"
+                )
+            if context.get("benchmark_only"):
+                answer += " 注意：当前只命中租金基准数据，不代表实时房源库存。"
+            next_action = "respond_final"
+            missing = []
+            sources = [{"name": "housing-agent", "type": "a2a", "updated_at": now_iso()}, {"name": "mcp-sql", "type": "sql", "updated_at": now_iso()}]
     elif any(k in message or k in lower for k in ["你是谁", "能做什么", "who are you"]):
         answer = "我是一个纽约租房与生活区域决策助手，主要帮助刚到纽约的人理解不同区域的安全、租金、通勤、便利设施和娱乐设施，并根据你的偏好逐步缩小候选居住区域。"
         next_action = "respond_final"

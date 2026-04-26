@@ -103,6 +103,47 @@ services:
       timeout: 5s
       retries: 5
 
+  mcp-sql:
+    build:
+      context: .
+      dockerfile: ./services/mcp-sql/Dockerfile
+    container_name: nyc_agent_mcp_sql
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /app/shared
+      DATABASE_URL_SQL: ${DATABASE_URL_SQL_DOCKER:-postgresql+psycopg://nyc_agent:nyc_agent_password@postgres:5432/nyc_agent}
+      SQL_STATEMENT_TIMEOUT_MS: ${SQL_STATEMENT_TIMEOUT_MS:-3000}
+    ports:
+      - "${MCP_SQL_PORT:-8020}:8020"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8020/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  housing-agent:
+    build:
+      context: .
+      dockerfile: ./services/housing-agent/Dockerfile
+    container_name: nyc_agent_housing_agent
+    restart: unless-stopped
+    depends_on:
+      mcp-sql:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /app/shared
+      MCP_SQL_URL: ${MCP_SQL_URL_DOCKER:-http://mcp-sql:8020}
+    ports:
+      - "${HOUSING_AGENT_PORT:-8011}:8011"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8011/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   orchestrator-agent:
     build:
       context: .
@@ -112,9 +153,12 @@ services:
     depends_on:
       profile-agent:
         condition: service_healthy
+      housing-agent:
+        condition: service_healthy
     environment:
       PYTHONPATH: /app/shared
       PROFILE_AGENT_URL: ${PROFILE_AGENT_URL_DOCKER:-http://profile-agent:8014}
+      HOUSING_AGENT_URL: ${HOUSING_AGENT_URL_DOCKER:-http://housing-agent:8011}
     ports:
       - "${ORCHESTRATOR_AGENT_PORT:-8010}:8010"
     healthcheck:
