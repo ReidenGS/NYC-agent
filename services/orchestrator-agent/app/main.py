@@ -1,0 +1,262 @@
+from __future__ import annotations
+
+import re
+from typing import Any
+from uuid import uuid4
+
+import httpx
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+
+from app.config import settings
+from nyc_agent_shared.prompt_loader import list_prompts, load_prompt
+from nyc_agent_shared.schemas import A2ARequest
+from nyc_agent_shared.time import now_iso
+
+app = FastAPI(title="NYC Agent Orchestrator Agent", version="0.1.0")
+
+AREA_ALIASES: dict[str, dict[str, str]] = {
+    "astoria": {"area_id": "QN0101", "area_name": "Astoria", "borough": "Queens"},
+    "阿斯托利亚": {"area_id": "QN0101", "area_name": "Astoria", "borough": "Queens"},
+    "lic": {"area_id": "QN0102", "area_name": "Long Island City", "borough": "Queens"},
+    "long island city": {"area_id": "QN0102", "area_name": "Long Island City", "borough": "Queens"},
+    "williamsburg": {"area_id": "BK0101", "area_name": "Williamsburg", "borough": "Brooklyn"},
+    "greenpoint": {"area_id": "BK0102", "area_name": "Greenpoint", "borough": "Brooklyn"},
+    "midtown": {"area_id": "MN0101", "area_name": "Midtown", "borough": "Manhattan"},
+}
+
+
+class ChatRequest(BaseModel):
+    session_id: str
+    message: str
+    debug: bool = False
+    client_context: dict[str, Any] | None = None
+
+
+class SessionCreateRequest(BaseModel):
+    client_timezone: str | None = None
+    client_locale: str | None = None
+
+
+class ProfilePatchRequest(BaseModel):
+    target_area_id: str | None = None
+    budget: dict[str, Any] | None = None
+    target_destination: str | None = None
+    max_commute_minutes: int | None = None
+    weights: dict[str, float] | None = None
+    preferences: list[str] | None = None
+
+
+def trace_id() -> str:
+    return f"trace_{uuid4().hex[:16]}"
+
+
+def envelope(data: Any, session_id: str | None = None, trace: str | None = None) -> dict[str, Any]:
+    return {"success": True, "trace_id": trace or trace_id(), "session_id": session_id, "data": data, "error": None}
+
+
+def _profile_a2a(task_type: str, trace: str, session_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
+    req = A2ARequest(
+        trace_id=trace,
+        session_id=session_id,
+        source_agent="orchestrator-agent",
+        target_agent="profile-agent",
+        task_type=task_type,
+        payload=payload,
+    )
+    with httpx.Client(timeout=settings.request_timeout_seconds) as client:
+        response = client.post(f"{settings.profile_agent_url.rstrip('/')}/a2a", json=req.model_dump())
+        response.raise_for_status()
+        body = response.json()
+    if body.get("status") != "success":
+        raise HTTPException(status_code=502, detail=body)
+    return body["payload"]["profile_snapshot"]
+
+
+def _find_area(message: str) -> dict[str, str] | None:
+    lower = message.lower()
+    for alias, area in AREA_ALIASES.items():
+        if alias in lower or alias in message:
+            return area
+    return None
+
+
+def _extract_budget(message: str) -> int | None:
+    if not any(token in message.lower() for token in ["budget", "rent", "租", "预算", "$", "美元"]):
+        return None
+    match = re.search(r"\$?\s?([1-9]\d{2,4})", message)
+    return int(match.group(1)) if match else None
+
+
+def _extract_bedroom(message: str) -> str | None:
+    lower = message.lower()
+    if "studio" in lower or "开间" in message:
+        return "studio"
+    if re.search(r"\b1\\s*(b|br|bed)\\b", lower) or "1b" in lower or "一居" in message:
+        return "1br"
+    if re.search(r"\b2\\s*(b|br|bed)\\b", lower) or "2b" in lower or "两居" in message:
+        return "2br"
+    return None
+
+
+def _needs_area(message: str) -> bool:
+    lower = message.lower()
+    keywords = ["安全", "犯罪", "房租", "租金", "预算", "附近", "这个区", "区域", "rent", "housing", "safe", "crime", "nearby", "area"]
+    return any(k in lower or k in message for k in keywords)
+
+
+@app.get("/health")
+def health() -> dict[str, Any]:
+    return {"status": "ok", "service": "orchestrator-agent", "prompts_loaded": len(list_prompts())}
+
+
+@app.get("/ready")
+def ready() -> dict[str, Any]:
+    try:
+        with httpx.Client(timeout=settings.request_timeout_seconds) as client:
+            response = client.get(f"{settings.profile_agent_url.rstrip('/')}/ready")
+            response.raise_for_status()
+        profile = "ok"
+    except Exception as exc:
+        profile = f"unavailable: {exc}"
+    return {"status": "ok" if profile == "ok" else "degraded", "dependencies": {"profile-agent": profile}}
+
+
+@app.get("/debug/prompts")
+def debug_prompts() -> dict[str, Any]:
+    names = list_prompts()
+    return {
+        "prompts": names,
+        "understand_prompt_preview": load_prompt("orchestrator/understand_prompt.txt")[:300]
+        if "orchestrator/understand_prompt.txt" in names
+        else None,
+    }
+
+
+@app.post("/sessions")
+def create_session(_: SessionCreateRequest | None = None) -> dict[str, Any]:
+    trace = trace_id()
+    profile = _profile_a2a("profile.create_session", trace, None, {})
+    return envelope({"session_id": profile["session_id"], "profile_snapshot": profile}, profile["session_id"], trace)
+
+
+@app.get("/sessions/{session_id}/profile")
+def get_profile(session_id: str) -> dict[str, Any]:
+    trace = trace_id()
+    profile = _profile_a2a("profile.get_snapshot", trace, session_id, {})
+    return envelope(profile, session_id, trace)
+
+
+@app.patch("/sessions/{session_id}/profile")
+def patch_profile(session_id: str, patch: ProfilePatchRequest) -> dict[str, Any]:
+    trace = trace_id()
+    slots: dict[str, Any] = {}
+    if patch.target_area_id:
+        slots["target_area_id"] = patch.target_area_id
+    if patch.budget and patch.budget.get("max") is not None:
+        slots["budget_monthly"] = patch.budget["max"]
+    if patch.target_destination:
+        slots["target_destination"] = patch.target_destination
+    if patch.max_commute_minutes:
+        slots["max_commute_minutes"] = patch.max_commute_minutes
+    if patch.preferences is not None:
+        slots["preferences"] = patch.preferences
+    profile = _profile_a2a("profile.patch_slots", trace, session_id, {"slots": slots})
+    if patch.weights:
+        profile = _profile_a2a("profile.update_weights", trace, session_id, {"weights": patch.weights})
+    return envelope(profile, session_id, trace)
+
+
+@app.post("/chat")
+def chat(request: ChatRequest) -> dict[str, Any]:
+    trace = trace_id()
+    message = request.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    profile = _profile_a2a("profile.get_snapshot", trace, request.session_id, {})
+    slots: dict[str, Any] = {}
+    area = _find_area(message)
+    if area and not profile.get("target_area_id"):
+        slots["target_area_id"] = area["area_id"]
+    budget = _extract_budget(message)
+    if budget:
+        slots["budget_monthly"] = budget
+    if slots:
+        profile = _profile_a2a("profile.patch_slots", trace, request.session_id, {"slots": slots})
+
+    active_area = area or profile.get("target_area")
+    if _needs_area(message) and not active_area:
+        data = {
+            "message_type": "follow_up",
+            "answer": "你想了解纽约哪个具体区域？例如 Astoria、Long Island City、Williamsburg。",
+            "next_action": "ask_follow_up",
+            "profile_snapshot": profile,
+            "missing_slots": ["target_area"],
+            "cards": [],
+            "display_refs": {"map_layer_ids": [], "display_result_ids": []},
+            "sources": [],
+            "data_quality": "unknown",
+            "debug": _debug(request.debug, trace, [("orchestrator.missing_slot", "orchestrator-agent", "success", 18, None)]),
+        }
+        return envelope(data, request.session_id, trace)
+
+    lower = message.lower()
+    area_name = (active_area or {}).get("area_name", "当前区域")
+    sources = [{"name": "orchestrator-agent rule fallback", "type": "system", "updated_at": now_iso()}]
+
+    if any(k in message or k in lower for k in ["预算", "房租", "租金", "rent", "1b", "1br"]):
+        bedroom = _extract_bedroom(message) or "1br"
+        budget_value = budget or ((profile.get("budget") or {}).get("max"))
+        if not budget_value and "预算" in message:
+            answer = f"我需要知道你的月租预算，才能判断 {area_name} 的 {bedroom} 是否合适。"
+            next_action = "ask_follow_up"
+            missing = ["budget_monthly"]
+        else:
+            answer = f"我先按 {area_name} 的 {bedroom} 来看。当前 housing-agent/MCP SQL 链路还在接入中；已从 profile 解析到预算为 ${budget_value}，下一步会交给 housing-agent 生成 SQL 查询租金区间和预算内房源。"
+            next_action = "respond_final"
+            missing = []
+    elif any(k in message or k in lower for k in ["你是谁", "能做什么", "who are you"]):
+        answer = "我是一个纽约租房与生活区域决策助手，主要帮助刚到纽约的人理解不同区域的安全、租金、通勤、便利设施和娱乐设施，并根据你的偏好逐步缩小候选居住区域。"
+        next_action = "respond_final"
+        missing = []
+    else:
+        answer = f"我先按 {area_name} 来看。A2A 链路已接入 profile-agent 和 mcp-profile；后续会继续把 housing、neighborhood、transit、weather 领域 Agent 接进来。你可以继续问这个区域的房租、安全、通勤或设施。"
+        next_action = "respond_final"
+        missing = []
+
+    refs = {"last_intents": ["housing.rent_query" if "租" in message or "rent" in lower else "area.metrics_query"], "sources": sources}
+    _profile_a2a("profile.save_last_response_refs", trace, request.session_id, {"last_response_refs": refs})
+
+    data = {
+        "message_type": "answer" if not missing else "follow_up",
+        "answer": answer,
+        "next_action": next_action,
+        "profile_snapshot": profile,
+        "missing_slots": missing,
+        "cards": [],
+        "display_refs": {"map_layer_ids": [], "display_result_ids": []},
+        "sources": sources,
+        "data_quality": "reference",
+        "debug": _debug(
+            request.debug,
+            trace,
+            [
+                ("orchestrator.received", "orchestrator-agent", "success", 12, None),
+                ("profile.get_snapshot", "profile-agent", "success", 40, "mcp-profile"),
+            ],
+        ),
+    }
+    return envelope(data, request.session_id, trace)
+
+
+def _debug(enabled: bool, trace: str, rows: list[tuple[str, str, str, int, str | None]]) -> dict[str, Any] | None:
+    if not enabled:
+        return None
+    return {
+        "trace_summary": [
+            {"step": step, "service": service, "status": status, "latency_ms": latency, "mcp": mcp}
+            for step, service, status, latency, mcp in rows
+        ],
+        "trace_id": trace,
+    }

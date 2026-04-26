@@ -67,6 +67,62 @@ services:
       timeout: 5s
       retries: 5
 
+  mcp-profile:
+    build:
+      context: .
+      dockerfile: ./services/mcp-profile/Dockerfile
+    container_name: nyc_agent_mcp_profile
+    restart: unless-stopped
+    environment:
+      PYTHONPATH: /app/shared
+    ports:
+      - "${MCP_PROFILE_PORT:-8026}:8026"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8026/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  profile-agent:
+    build:
+      context: .
+      dockerfile: ./services/profile-agent/Dockerfile
+    container_name: nyc_agent_profile_agent
+    restart: unless-stopped
+    depends_on:
+      mcp-profile:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /app/shared
+      MCP_PROFILE_URL: ${MCP_PROFILE_URL_DOCKER:-http://mcp-profile:8026}
+    ports:
+      - "${PROFILE_AGENT_PORT:-8014}:8014"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8014/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  orchestrator-agent:
+    build:
+      context: .
+      dockerfile: ./services/orchestrator-agent/Dockerfile
+    container_name: nyc_agent_orchestrator_agent
+    restart: unless-stopped
+    depends_on:
+      profile-agent:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /app/shared
+      PROFILE_AGENT_URL: ${PROFILE_AGENT_URL_DOCKER:-http://profile-agent:8014}
+    ports:
+      - "${ORCHESTRATOR_AGENT_PORT:-8010}:8010"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8010/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 
   api-gateway:
     build:
@@ -76,7 +132,11 @@ services:
     depends_on:
       data-sync-service:
         condition: service_healthy
+      orchestrator-agent:
+        condition: service_healthy
     environment:
+      USE_REMOTE_ORCHESTRATOR: ${USE_REMOTE_ORCHESTRATOR:-true}
+      ORCHESTRATOR_AGENT_URL: ${ORCHESTRATOR_AGENT_URL_DOCKER:-http://orchestrator-agent:8010}
       DATA_SYNC_BASE_URL: ${DATA_SYNC_BASE_URL_DOCKER:-http://data-sync-service:8030}
       CORS_ORIGINS: ${API_GATEWAY_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
     ports:

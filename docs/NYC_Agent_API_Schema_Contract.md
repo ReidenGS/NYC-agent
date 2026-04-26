@@ -1022,8 +1022,9 @@ Response `data`：
   "payload": {
     "domain_user_query": "Astoria 最近偷窃多吗？",
     "slots": {},
-    "profile_snapshot": {},
-    "conversation_summary": ""
+    "domain_context": {
+      "window_days": 30
+    }
   },
   "slot_state": {
     "required_slots": ["target_area"],
@@ -1055,6 +1056,8 @@ Response `data`：
 
 ### 11.1 Domain Task Input
 
+Domain Task Input 只包含领域任务所需的最小上下文。完整 `profile_snapshot` 和完整 `conversation_summary` 只允许 Orchestrator/Profile Agent 使用，不能透传给 Domain Agent。
+
 ```json
 {
   "trace_id": "trace_01H...",
@@ -1069,8 +1072,10 @@ Response `data`：
       "confidence": 0.95
     }
   },
-  "profile_snapshot": {},
-  "conversation_summary": "用户正在评估 Astoria，比较关注安全。",
+  "domain_context": {
+    "window_days": 30,
+    "currency": "USD"
+  },
   "debug": false
 }
 ```

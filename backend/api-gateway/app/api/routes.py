@@ -17,10 +17,12 @@ from app.models.transit import TransitRealtimeRequest, TransitRealtimeResponse
 from app.models.weather import WeatherResponse
 from app.services import mock_data
 from app.services.orchestrator import OrchestratorService
+from app.services.remote_orchestrator import RemoteOrchestratorClient
 from app.stores.session_store import session_store
 
 router = APIRouter()
 orchestrator = OrchestratorService(session_store)
+remote_orchestrator = RemoteOrchestratorClient()
 
 
 def new_trace_id() -> str:
@@ -43,17 +45,37 @@ def health() -> dict:
 
 @router.get('/ready')
 def ready() -> dict:
-    return {'status': 'ok', 'dependencies': {'orchestrator': 'in_process_mock', 'profile_store': 'memory'}}
+    deps = {'orchestrator': 'in_process_mock_fallback', 'profile_store': 'memory'}
+    if settings.use_remote_orchestrator:
+        try:
+            with httpx.Client(timeout=2.0) as client:
+                response = client.get(f"{settings.orchestrator_agent_url.rstrip('/')}/ready")
+                response.raise_for_status()
+            deps['orchestrator-agent'] = 'ok'
+        except Exception as exc:
+            deps['orchestrator-agent'] = f'unavailable: {exc}'
+    return {'status': 'ok', 'dependencies': deps}
 
 
 @router.post('/sessions', response_model=ApiEnvelope[SessionCreateResponse])
-def create_session(_: SessionCreateRequest | None = None):
+def create_session(request: SessionCreateRequest | None = None):
+    if settings.use_remote_orchestrator:
+        try:
+            data = remote_orchestrator.create_session(request.model_dump() if request else {})
+            return envelope(SessionCreateResponse.model_validate(data), session_id=data['session_id'])
+        except Exception:
+            pass
     profile = session_store.create()
     return envelope(SessionCreateResponse(session_id=profile.session_id, profile_snapshot=profile), session_id=profile.session_id)
 
 
 @router.get('/sessions/{session_id}/profile', response_model=ApiEnvelope[ProfileSnapshot])
 def get_profile(session_id: str):
+    if settings.use_remote_orchestrator:
+        try:
+            return envelope(ProfileSnapshot.model_validate(remote_orchestrator.get_profile(session_id)), session_id=session_id)
+        except Exception:
+            pass
     profile = session_store.get(session_id)
     if profile is None:
         error_envelope('VALIDATION_ERROR', 'session_id not found', session_id=session_id, status_code=404)
@@ -62,6 +84,11 @@ def get_profile(session_id: str):
 
 @router.patch('/sessions/{session_id}/profile', response_model=ApiEnvelope[ProfileSnapshot])
 def patch_profile(session_id: str, patch: ProfilePatchRequest):
+    if settings.use_remote_orchestrator:
+        try:
+            return envelope(ProfileSnapshot.model_validate(remote_orchestrator.patch_profile(session_id, patch.model_dump(exclude_none=True))), session_id=session_id)
+        except Exception:
+            pass
     try:
         profile = session_store.patch(session_id, patch)
     except KeyError:
@@ -73,6 +100,12 @@ def patch_profile(session_id: str, patch: ProfilePatchRequest):
 def chat(request: ChatRequest):
     if not request.message.strip():
         error_envelope('VALIDATION_ERROR', 'message is required', session_id=request.session_id)
+    if settings.use_remote_orchestrator:
+        try:
+            data = remote_orchestrator.chat(request.model_dump())
+            return envelope(ChatResponseData.model_validate(data), session_id=request.session_id)
+        except Exception:
+            pass
     try:
         data = orchestrator.handle_chat(request)
     except KeyError:
@@ -135,7 +168,7 @@ def debug_dependencies():
         data_sync = {'status': 'unavailable', 'error': str(exc)}
 
     return envelope({'dependencies': {
-        'orchestrator-agent': 'in_process_mock',
+        'orchestrator-agent': settings.orchestrator_agent_url if settings.use_remote_orchestrator else 'disabled',
         'mcp-services': 'pending',
         'postgres': 'not_used_by_gateway_mvp',
         'data-sync-service': data_sync,

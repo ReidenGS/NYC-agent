@@ -1,0 +1,1 @@
+Internal Decision Module. Combine housing, neighborhood, and transit structured results using current profile weights. Weather is not scored. Missing dimensions are excluded and remaining weights are renormalized. Return strict decision JSON only.
