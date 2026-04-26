@@ -14,6 +14,9 @@
 | `profile-agent` | `8014` | 用户画像状态 Agent，负责把 Orchestrator 的 profile 任务转成 MCP 工具调用 | 已实现 A2A `/a2a` 入口 |
 | `weather-agent` | `8015` | 天气领域 Agent，负责当前天气和小时预报工具调用 | 已接入 Orchestrator 的天气问题 |
 | `mcp-sql` | `8020` | 通用只读 SQL MCP，按 domain 白名单校验并执行 SQL | 已支持 `housing/safety/amenity/entertainment` 表白名单，当前 housing 已使用 |
+| `mcp-safety` | `8022` | 安全领域 MCP，封装 safety SQL domain | 已实现为 `mcp-sql` 薄代理，强制 `domain=safety` |
+| `mcp-amenity` | `8023` | 便利设施 MCP，封装 amenity SQL domain | 已实现为 `mcp-sql` 薄代理，强制 `domain=amenity` |
+| `mcp-entertainment` | `8024` | 娱乐设施 MCP，封装 entertainment SQL domain | 已实现为 `mcp-sql` 薄代理，强制 `domain=entertainment` |
 | `mcp-transit` | `8025` | Transit 固定工具 MCP，读取站点维表、实时预测表和通勤缓存表 | 已实现站点匹配、下一班车查询、通勤缓存查询 |
 | `mcp-profile` | `8026` | Profile MCP 工具服务，负责 session/profile 的读写 | 已实现 Postgres 优先持久化，数据库不可用时自动 memory fallback |
 | `mcp-weather` | `8027` | Weather 固定工具 MCP，调用 National Weather Service API | 已实现当前天气和小时预报 |
@@ -30,7 +33,8 @@ Frontend
       -> housing-agent
         -> mcp-sql
       -> neighborhood-agent
-        -> mcp-sql
+        -> mcp-safety / mcp-amenity / mcp-entertainment
+          -> mcp-sql
       -> transit-agent
         -> mcp-transit
       -> weather-agent
@@ -57,6 +61,9 @@ NEIGHBORHOOD_AGENT_URL_DOCKER=http://neighborhood-agent:8012
 TRANSIT_AGENT_URL_DOCKER=http://transit-agent:8013
 WEATHER_AGENT_URL_DOCKER=http://weather-agent:8015
 MCP_SQL_URL_DOCKER=http://mcp-sql:8020
+MCP_SAFETY_URL_DOCKER=http://mcp-safety:8022
+MCP_AMENITY_URL_DOCKER=http://mcp-amenity:8022
+MCP_ENTERTAINMENT_URL_DOCKER=http://mcp-entertainment:8022
 MCP_TRANSIT_URL_DOCKER=http://mcp-transit:8025
 MCP_WEATHER_URL_DOCKER=http://mcp-weather:8027
 DATABASE_URL_SQL_DOCKER=postgresql+psycopg://nyc_agent:nyc_agent_password@postgres:5432/nyc_agent
@@ -161,6 +168,25 @@ SQL planner 模式：
 - 使用 SQLAlchemy 参数绑定执行
 - 设置 `statement_timeout`
 
+### `mcp-safety` / `mcp-amenity` / `mcp-entertainment`
+
+这三个 MCP 是独立容器服务，但内部复用 `mcp-sql` 的 SQL Validator 和执行器。
+
+| MCP | 强制 domain | 用途 |
+| --- | --- | --- |
+| `mcp-safety` | `safety` | 犯罪/安全 SQL 查询 |
+| `mcp-amenity` | `amenity` | 便利设施 SQL 查询 |
+| `mcp-entertainment` | `entertainment` | 娱乐设施 SQL 查询 |
+
+统一接口：
+
+| Method | Path | 用途 |
+| --- | --- | --- |
+| `GET` | `/health` | 服务健康检查 |
+| `GET` | `/ready` | 检查 `mcp-sql` 是否可用 |
+| `GET` | `/tools` | 查看可用工具 |
+| `POST` | `/tools/execute_readonly_sql` | 代理到 `mcp-sql`，并强制注入对应 domain |
+
 ### `transit-agent`
 
 | Method | Path | 用途 |
@@ -255,7 +281,7 @@ SQL planner 模式：
 
 ```bash
 cp .env.example .env
-docker compose up -d postgres redis mcp-profile profile-agent mcp-sql housing-agent neighborhood-agent mcp-transit transit-agent mcp-weather weather-agent orchestrator-agent api-gateway
+docker compose up -d postgres redis mcp-profile profile-agent mcp-sql mcp-safety mcp-amenity mcp-entertainment housing-agent neighborhood-agent mcp-transit transit-agent mcp-weather weather-agent orchestrator-agent api-gateway
 ```
 
 仅本机调试三个 Agent 服务时，可以使用：
@@ -303,4 +329,4 @@ profile.budget.max = 3000
 1. 在 `mcp-transit` 内部补 MTA GTFS-RT / Bus Time 拉取和短缓存。
 2. 把 `mcp-weather` 的 seed 坐标解析替换为从 `app_area_dimension` 计算 centroid。
 3. 为 `housing-agent` / `neighborhood-agent` 增加 LLM planner 的 mock 单元测试，覆盖 JSON 解析失败和 validator 拒绝后的 fallback。
-4. 如果简历展示需要显式 MCP 拆分，可在 `mcp-sql` 外再加 `mcp-safety`、`mcp-amenity`、`mcp-entertainment` 薄封装服务，内部仍复用同一 SQL Validator。
+4. 根据需要把 `mcp-safety`、`mcp-amenity`、`mcp-entertainment` 从薄代理逐步扩展为包含地图图层/点位缓存的领域 MCP。

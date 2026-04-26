@@ -130,6 +130,72 @@ services:
       timeout: 5s
       retries: 5
 
+  mcp-safety:
+    build:
+      context: .
+      dockerfile: ./services/mcp-domain-sql/Dockerfile
+    container_name: nyc_agent_mcp_safety
+    restart: unless-stopped
+    depends_on:
+      mcp-sql:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /app/shared
+      SERVICE_NAME: mcp-safety
+      SQL_DOMAIN: safety
+      MCP_SQL_URL: ${MCP_SQL_URL_DOCKER:-http://mcp-sql:8020}
+    ports:
+      - "${MCP_SAFETY_PORT:-8022}:8022"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8022/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mcp-amenity:
+    build:
+      context: .
+      dockerfile: ./services/mcp-domain-sql/Dockerfile
+    container_name: nyc_agent_mcp_amenity
+    restart: unless-stopped
+    depends_on:
+      mcp-sql:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /app/shared
+      SERVICE_NAME: mcp-amenity
+      SQL_DOMAIN: amenity
+      MCP_SQL_URL: ${MCP_SQL_URL_DOCKER:-http://mcp-sql:8020}
+    ports:
+      - "${MCP_AMENITY_PORT:-8023}:8022"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8022/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mcp-entertainment:
+    build:
+      context: .
+      dockerfile: ./services/mcp-domain-sql/Dockerfile
+    container_name: nyc_agent_mcp_entertainment
+    restart: unless-stopped
+    depends_on:
+      mcp-sql:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /app/shared
+      SERVICE_NAME: mcp-entertainment
+      SQL_DOMAIN: entertainment
+      MCP_SQL_URL: ${MCP_SQL_URL_DOCKER:-http://mcp-sql:8020}
+    ports:
+      - "${MCP_ENTERTAINMENT_PORT:-8024}:8022"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8022/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   housing-agent:
     build:
       context: .
@@ -162,11 +228,18 @@ services:
     container_name: nyc_agent_neighborhood_agent
     restart: unless-stopped
     depends_on:
-      mcp-sql:
+      mcp-safety:
+        condition: service_healthy
+      mcp-amenity:
+        condition: service_healthy
+      mcp-entertainment:
         condition: service_healthy
     environment:
       PYTHONPATH: /app/shared
       MCP_SQL_URL: ${MCP_SQL_URL_DOCKER:-http://mcp-sql:8020}
+      MCP_SAFETY_URL: ${MCP_SAFETY_URL_DOCKER:-http://mcp-safety:8022}
+      MCP_AMENITY_URL: ${MCP_AMENITY_URL_DOCKER:-http://mcp-amenity:8022}
+      MCP_ENTERTAINMENT_URL: ${MCP_ENTERTAINMENT_URL_DOCKER:-http://mcp-entertainment:8022}
       USE_LLM_SQL_PLANNER: ${USE_LLM_SQL_PLANNER:-true}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}

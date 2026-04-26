@@ -54,8 +54,12 @@ def _a2a_error(req: A2ARequest, code: str, message: str, status: str = "error", 
 
 
 def _execute_query(session_id: str | None, query: dict[str, Any]) -> dict[str, Any]:
+    domain_url = {
+        "safety": settings.mcp_safety_url,
+        "amenity": settings.mcp_amenity_url,
+        "entertainment": settings.mcp_entertainment_url,
+    }.get(query["domain"], settings.mcp_sql_url)
     args = {
-        "domain": query["domain"],
         "purpose": query["purpose"],
         "sql": query["sql"],
         "params": query.get("params", {}),
@@ -63,7 +67,7 @@ def _execute_query(session_id: str | None, query: dict[str, Any]) -> dict[str, A
     }
     with httpx.Client(timeout=settings.request_timeout_seconds) as client:
         response = client.post(
-            f"{settings.mcp_sql_url.rstrip('/')}/tools/execute_readonly_sql",
+            f"{domain_url.rstrip('/')}/tools/execute_readonly_sql",
             json={"session_id": session_id, "arguments": args},
         )
         response.raise_for_status()
