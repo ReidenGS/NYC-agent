@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from app import jobs as jobs_registry
 from app import scheduler as scheduler_mod
@@ -82,31 +82,36 @@ def area_map_layers(
 ) -> dict[str, Any]:
     requested_layer_types = [item.strip() for item in layer_types.split(",") if item.strip()]
     requested_metric_names = [item.strip() for item in metric_names.split(",") if item.strip()]
+    filters = [
+        "area_id = :area_id",
+        "(expires_at IS NULL OR expires_at >= NOW())",
+    ]
+    params: dict[str, Any] = {"area_id": area_id}
+    bind_params = []
+    if requested_layer_types:
+        filters.append("layer_type IN :layer_types")
+        params["layer_types"] = requested_layer_types
+        bind_params.append(bindparam("layer_types", expanding=True))
+    if requested_metric_names:
+        filters.append("metric_name IN :metric_names")
+        params["metric_names"] = requested_metric_names
+        bind_params.append(bindparam("metric_names", expanding=True))
+    sql = text(
+        f"""
+        SELECT layer_id, area_id, layer_type, metric_name, geojson, style_hint,
+               source_snapshot, updated_at, expires_at
+        FROM app_map_layer_cache
+        WHERE {" AND ".join(filters)}
+        ORDER BY metric_date DESC, layer_type ASC, metric_name ASC
+        LIMIT 20
+        """
+    )
+    if bind_params:
+        sql = sql.bindparams(*bind_params)
     with db_session() as session:
         rows = [
             dict(row)
-            for row in session.execute(
-                text(
-                    """
-                    SELECT layer_id, area_id, layer_type, metric_name, geojson, style_hint,
-                           source_snapshot, updated_at, expires_at
-                    FROM app_map_layer_cache
-                    WHERE area_id = :area_id
-                      AND (:layer_types_empty OR layer_type = ANY(:layer_types))
-                      AND (:metric_names_empty OR metric_name = ANY(:metric_names))
-                      AND (expires_at IS NULL OR expires_at >= NOW())
-                    ORDER BY metric_date DESC, layer_type ASC, metric_name ASC
-                    LIMIT 20
-                    """
-                ),
-                {
-                    "area_id": area_id,
-                    "layer_types": requested_layer_types,
-                    "layer_types_empty": not requested_layer_types,
-                    "metric_names": requested_metric_names,
-                    "metric_names_empty": not requested_metric_names,
-                },
-            ).mappings()
+            for row in session.execute(sql, params).mappings()
         ]
     for row in rows:
         row["data_quality"] = "cached"
