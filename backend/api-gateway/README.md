@@ -6,6 +6,7 @@ Current scope:
 - Provides runnable Gateway routes for frontend integration.
 - Calls remote `orchestrator-agent` by default for session/profile/chat.
 - Keeps a deterministic in-process fallback for local frontend work when Agent services are down.
+- Proxies `/areas/{area_id}/map-layers` to `data-sync-service` so the frontend can load pre-generated GeoJSON layers from `app_map_layer_cache`.
 - Exposes `/debug/dependencies`, including data-sync freshness when `DATA_SYNC_BASE_URL` is reachable.
 - Does not access PostgreSQL/MCP directly; domain work goes through A2A Agent services and MCP services.
 

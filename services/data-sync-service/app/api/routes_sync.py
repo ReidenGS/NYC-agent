@@ -2,7 +2,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import text
 
 from app import jobs as jobs_registry
@@ -72,6 +72,49 @@ def sync_freshness() -> dict[str, Any]:
         row["next_run_time"] = sched["next_run_time"] if sched else None
         row["scheduler_trigger"] = sched["trigger"] if sched else None
     return {"freshness": rows}
+
+
+@router.get("/areas/{area_id}/map-layers")
+def area_map_layers(
+    area_id: str,
+    layer_types: str = Query("choropleth,marker"),
+    metric_names: str = Query("crime_index,entertainment,convenience"),
+) -> dict[str, Any]:
+    requested_layer_types = [item.strip() for item in layer_types.split(",") if item.strip()]
+    requested_metric_names = [item.strip() for item in metric_names.split(",") if item.strip()]
+    with db_session() as session:
+        rows = [
+            dict(row)
+            for row in session.execute(
+                text(
+                    """
+                    SELECT layer_id, area_id, layer_type, metric_name, geojson, style_hint,
+                           source_snapshot, updated_at, expires_at
+                    FROM app_map_layer_cache
+                    WHERE area_id = :area_id
+                      AND (:layer_types_empty OR layer_type = ANY(:layer_types))
+                      AND (:metric_names_empty OR metric_name = ANY(:metric_names))
+                      AND (expires_at IS NULL OR expires_at >= NOW())
+                    ORDER BY metric_date DESC, layer_type ASC, metric_name ASC
+                    LIMIT 20
+                    """
+                ),
+                {
+                    "area_id": area_id,
+                    "layer_types": requested_layer_types,
+                    "layer_types_empty": not requested_layer_types,
+                    "metric_names": requested_metric_names,
+                    "metric_names_empty": not requested_metric_names,
+                },
+            ).mappings()
+        ]
+    for row in rows:
+        row["data_quality"] = "cached"
+        if row.get("updated_at") is not None:
+            row["updated_at"] = row["updated_at"].isoformat()
+        if row.get("expires_at") is not None:
+            row["expires_at"] = row["expires_at"].isoformat()
+    return {"area_id": area_id, "layers": rows}
 
 
 @router.get("/sync/scheduler")

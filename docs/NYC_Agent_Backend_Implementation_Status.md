@@ -6,7 +6,7 @@
 
 | 服务 | 端口 | 职责 | 当前状态 |
 | --- | --- | --- | --- |
-| `api-gateway` | `8000` | 前端唯一 HTTP 入口，负责 session/chat/profile/debug API | 已接入远程 `orchestrator-agent`，失败时保留本地 mock fallback |
+| `api-gateway` | `8000` | 前端唯一 HTTP 入口，负责 session/chat/profile/debug/map API | 已接入远程 `orchestrator-agent`，地图图层优先代理 `data-sync-service`，失败时保留本地 mock fallback |
 | `orchestrator-agent` | `8010` | 主 Agent，负责会话理解、缺槽追问、profile 读取/更新、后续 Domain Agent 调度入口 | 已实现最小链路：session、profile、chat、prompt debug |
 | `housing-agent` | `8011` | 租房领域 Agent，负责生成 housing SQL plan、调用 MCP SQL、返回结构化租金/预算匹配结果 | 已接入 Orchestrator 的租金/预算问题；支持 GPT-4o SQL planner，可自动 fallback |
 | `neighborhood-agent` | `8012` | 区域画像 Agent，负责安全、便利设施、娱乐设施和区域概览 SQL plan | 已接入 Orchestrator 的安全/便利/娱乐问题；支持 GPT-4o SQL planner，可自动 fallback |
@@ -20,7 +20,7 @@
 | `mcp-transit` | `8025` | Transit 固定工具 MCP，读取站点维表、按需拉取 MTA GTFS-RT/Bus Time、查询实时预测表并生成短期通勤缓存 | 已实现站点匹配、下一班车实时刷新与查询、简化通勤估算与缓存 |
 | `mcp-profile` | `8026` | Profile MCP 工具服务，负责 session/profile 的读写 | 已实现 Postgres 优先持久化，数据库不可用时自动 memory fallback |
 | `mcp-weather` | `8027` | Weather 固定工具 MCP，从 `app_area_dimension` 解析区域坐标并调用 National Weather Service API | 已实现当前天气和小时预报 |
-| `data-sync-service` | `8030` | 数据同步与入库任务 | Claude 已完成主要同步任务，继续沿用同一 Postgres |
+| `data-sync-service` | `8030` | 数据同步与入库任务、地图图层缓存读取 | Claude 已完成主要同步任务；已暴露 `app_map_layer_cache` 读取接口 |
 | `postgres` | `5432` | PostGIS 数据库 | 统一数据库，不要为新服务另起 DB |
 | `redis` | `6379` | 缓存/短期状态预留 | 已在 compose 中存在 |
 

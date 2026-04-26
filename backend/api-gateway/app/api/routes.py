@@ -121,9 +121,25 @@ def area_metrics(area_id: str, session_id: str = Query(...)):
 
 
 @router.get('/areas/{area_id}/map-layers', response_model=ApiEnvelope[MapLayersResponse])
-def area_map_layers(area_id: str, session_id: str = Query(...)):
+def area_map_layers(
+    area_id: str,
+    session_id: str = Query(...),
+    layer_types: str = Query('choropleth,marker'),
+    metric_names: str = Query('crime_index,entertainment,convenience'),
+):
     if session_store.get(session_id) is None:
         error_envelope('VALIDATION_ERROR', 'session_id not found', session_id=session_id, status_code=404)
+    try:
+        with httpx.Client(timeout=2.0) as client:
+            response = client.get(
+                f"{settings.data_sync_base_url.rstrip('/')}/areas/{area_id}/map-layers",
+                params={'layer_types': layer_types, 'metric_names': metric_names},
+            )
+            response.raise_for_status()
+            data = MapLayersResponse.model_validate(response.json())
+            return envelope(data, session_id=session_id)
+    except Exception:
+        pass
     return envelope(mock_data.map_layers(area_id), session_id=session_id)
 
 

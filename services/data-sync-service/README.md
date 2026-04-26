@@ -15,6 +15,7 @@ Spec: [docs/NYC_Agent_Data_Sync_Design.md](../../docs/NYC_Agent_Data_Sync_Design
 | GET    | `/sync/status?limit=20`    | Read recent rows from `app_data_sync_job_log` |
 | GET    | `/sync/freshness`          | Read `v_sync_freshness` plus scheduler next-run metadata |
 | GET    | `/sync/scheduler`          | Inspect APScheduler state (enabled flag + next-run for each job) |
+| GET    | `/areas/{area_id}/map-layers` | Read unexpired pre-generated GeoJSON layers from `app_map_layer_cache` |
 | POST   | `/sync/run/{job_name}`     | Submit one job (async); poll status. Paid jobs (see below) require `?confirm_paid=yes`. |
 | POST   | `/sync/run-bootstrap`      | Submit the bootstrap chain (sync_nta → sync_nypd_crime → sync_overpass_poi → sync_facilities → sync_mta_static → sync_mta_bus_static → sync_311 → build_map_layers). RentCast and ZORI/HUD are excluded due to cost/api-key/cadence constraints. |
 
