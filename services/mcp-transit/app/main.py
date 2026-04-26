@@ -1,0 +1,132 @@
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import FastAPI
+from pydantic import BaseModel, Field
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.config import settings
+from nyc_agent_shared.time import now_iso
+
+app = FastAPI(title="NYC Agent MCP Transit", version="0.1.0")
+engine = create_engine(settings.sqlalchemy_database_url, pool_pre_ping=True, pool_size=3, max_overflow=2)
+
+
+class ToolRequest(BaseModel):
+    session_id: str | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+def mcp_response(status: str, tool: str, data: Any, *, error: dict[str, Any] | None = None, source_tables: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "status": status,
+        "tool": tool,
+        "data": data,
+        "source_tables": source_tables or [],
+        "source": [{"name": "mcp-transit", "type": "fixed_tool", "timestamp": now_iso()}],
+        "timestamp": now_iso(),
+        "confidence": 1.0 if status == "success" else 0.0,
+        "data_quality": "realtime" if status == "success" else "no_data" if status == "no_data" else "unknown",
+        "error": error,
+    }
+
+
+def db_rows(sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+    with engine.begin() as conn:
+        conn.execute(text(f"SET LOCAL statement_timeout = {int(settings.transit_statement_timeout_ms)}"))
+        result = conn.execute(text(sql), params)
+        return [dict(row._mapping) for row in result.fetchall()]
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok", "service": "mcp-transit"}
+
+
+@app.get("/ready")
+def ready() -> dict[str, Any]:
+    try:
+        db_rows("SELECT 1 AS ok", {})
+        db = "ok"
+    except Exception as exc:
+        db = f"unavailable: {exc}"
+    return {"status": "ok" if db == "ok" else "degraded", "dependencies": {"postgres": db}}
+
+
+@app.get("/tools")
+def tools() -> dict[str, list[str]]:
+    return {"tools": ["resolve_station_or_stop", "get_next_departures", "get_realtime_commute"]}
+
+
+@app.post("/tools/resolve_station_or_stop")
+def resolve_station_or_stop(request: ToolRequest) -> dict[str, Any]:
+    args = request.arguments
+    stop_name = str(args.get("stop_name") or args.get("station_name") or "").strip()
+    mode = str(args.get("mode") or "subway").strip().lower()
+    if not stop_name:
+        return mcp_response("validation_error", "resolve_station_or_stop", None, error={"code": "MISSING_ARGUMENT", "message": "stop_name or station_name is required.", "retryable": False})
+    try:
+        rows = db_rows(
+            "SELECT stop_id, stop_name, mode, latitude, longitude, parent_station_id, source "
+            "FROM app_transit_stop_dimension "
+            "WHERE mode = :mode AND stop_name ILIKE :stop_name "
+            "ORDER BY stop_name ASC LIMIT 10",
+            {"mode": mode, "stop_name": f"%{stop_name}%"},
+        )
+    except SQLAlchemyError:
+        return mcp_response("execution_error", "resolve_station_or_stop", None, error={"code": "DB_ERROR", "message": "station lookup failed.", "retryable": True}, source_tables=["app_transit_stop_dimension"])
+    if not rows:
+        return mcp_response("no_data", "resolve_station_or_stop", [], source_tables=["app_transit_stop_dimension"])
+    return mcp_response("success", "resolve_station_or_stop", {"stops": rows}, source_tables=["app_transit_stop_dimension"])
+
+
+@app.post("/tools/get_next_departures")
+def get_next_departures(request: ToolRequest) -> dict[str, Any]:
+    args = request.arguments
+    mode = str(args.get("mode") or "").strip().lower()
+    route_id = str(args.get("route_id") or "").strip().upper()
+    stop_id = str(args.get("stop_id") or "").strip()
+    limit = max(1, min(int(args.get("limit") or 2), 5))
+    if not mode or not route_id or not stop_id:
+        return mcp_response("validation_error", "get_next_departures", None, error={"code": "MISSING_ARGUMENT", "message": "mode, route_id and stop_id are required.", "retryable": False})
+    try:
+        rows = db_rows(
+            "SELECT prediction_id, mode, stop_id, route_id, trip_id, direction_id, arrival_time, departure_time, "
+            "delay_seconds, prediction_rank, source, feed_timestamp, fetched_at, expires_at "
+            "FROM app_transit_realtime_prediction "
+            "WHERE mode = :mode AND route_id = :route_id AND stop_id = :stop_id AND expires_at >= NOW() "
+            "ORDER BY COALESCE(departure_time, arrival_time) ASC LIMIT :limit",
+            {"mode": mode, "route_id": route_id, "stop_id": stop_id, "limit": limit},
+        )
+    except SQLAlchemyError:
+        return mcp_response("execution_error", "get_next_departures", None, error={"code": "DB_ERROR", "message": "departure query failed.", "retryable": True}, source_tables=["app_transit_realtime_prediction"])
+    if not rows:
+        return mcp_response("no_data", "get_next_departures", {"departures": []}, source_tables=["app_transit_realtime_prediction"])
+    return mcp_response("success", "get_next_departures", {"stop_id": stop_id, "route_id": route_id, "departures": rows}, source_tables=["app_transit_realtime_prediction"])
+
+
+@app.post("/tools/get_realtime_commute")
+def get_realtime_commute(request: ToolRequest) -> dict[str, Any]:
+    args = request.arguments
+    origin = str(args.get("origin") or "").strip()
+    destination = str(args.get("destination") or "").strip()
+    mode = str(args.get("mode") or "").strip().lower()
+    if not origin or not destination or not mode:
+        return mcp_response("validation_error", "get_realtime_commute", None, error={"code": "MISSING_ARGUMENT", "message": "origin, destination and mode are required.", "retryable": False})
+    try:
+        rows = db_rows(
+            "SELECT cache_key, origin_text, destination_text, mode, origin_stop_id, destination_stop_id, route_id, "
+            "walking_to_stop_minutes, waiting_minutes, in_vehicle_minutes, total_minutes, recommended_leave_at, "
+            "estimated_arrival_at, next_departures, realtime_used, fallback_used, source_snapshot, fetched_at, expires_at "
+            "FROM app_transit_trip_result_cache "
+            "WHERE origin_text ILIKE :origin AND destination_text ILIKE :destination AND mode = :mode AND expires_at >= NOW() "
+            "ORDER BY fetched_at DESC LIMIT 1",
+            {"origin": f"%{origin}%", "destination": f"%{destination}%", "mode": mode},
+        )
+    except SQLAlchemyError:
+        return mcp_response("execution_error", "get_realtime_commute", None, error={"code": "DB_ERROR", "message": "commute query failed.", "retryable": True}, source_tables=["app_transit_trip_result_cache"])
+    if not rows:
+        return mcp_response("no_data", "get_realtime_commute", None, source_tables=["app_transit_trip_result_cache"])
+    return mcp_response("success", "get_realtime_commute", rows[0], source_tables=["app_transit_trip_result_cache"])

@@ -103,6 +103,21 @@ def _neighborhood_a2a(task_type: str, trace: str, session_id: str | None, payloa
         return response.json()
 
 
+def _transit_a2a(task_type: str, trace: str, session_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
+    req = A2ARequest(
+        trace_id=trace,
+        session_id=session_id,
+        source_agent="orchestrator-agent",
+        target_agent="transit-agent",
+        task_type=task_type,
+        payload=payload,
+    )
+    with httpx.Client(timeout=settings.request_timeout_seconds) as client:
+        response = client.post(f"{settings.transit_agent_url.rstrip('/')}/a2a", json=req.model_dump())
+        response.raise_for_status()
+        return response.json()
+
+
 def _find_area(message: str) -> dict[str, str] | None:
     lower = message.lower()
     for alias, area in AREA_ALIASES.items():
@@ -183,6 +198,57 @@ def _build_neighborhood_payload(message: str, profile: dict[str, Any], area: dic
     }
 
 
+def _is_transit_query(message: str) -> bool:
+    lower = message.lower()
+    return any(k in lower or k in message for k in ["地铁", "公交", "下一班", "出发", "通勤", "多久能到", "subway", "bus", "train", "commute", "departure"])
+
+
+def _transit_task_type(message: str) -> str:
+    lower = message.lower()
+    if any(k in lower or k in message for k in ["下一班", "什么时候来", "什么时候出发", "departure", "next train", "next bus"]):
+        return "transit.next_departure"
+    return "transit.realtime_commute"
+
+
+def _extract_transit_mode(message: str) -> str | None:
+    lower = message.lower()
+    if "公交" in message or "bus" in lower:
+        return "bus"
+    if "地铁" in message or "subway" in lower or "train" in lower:
+        return "subway"
+    if "都可以" in message or "either" in lower:
+        return "either"
+    return None
+
+
+def _extract_route_id(message: str) -> str | None:
+    match = re.search(r"\b([A-Z]\d{0,2}|[1-7])\s*(线|train|bus)?\b", message.upper())
+    return match.group(1) if match else None
+
+
+def _build_transit_payload(message: str) -> dict[str, Any]:
+    mode = _extract_transit_mode(message)
+    task_type = _transit_task_type(message)
+    slots: dict[str, Any] = {}
+    if mode:
+        slots["mode"] = {"value": mode, "source": "user_explicit", "confidence": 0.9}
+    if task_type == "transit.next_departure":
+        route = _extract_route_id(message)
+        if route:
+            slots["route_id"] = {"value": route, "source": "user_explicit", "confidence": 0.8}
+        station_match = re.search(r"(?:在|从|at)\s*([A-Za-z0-9 .'/&-]{2,40}|[\u4e00-\u9fffA-Za-z0-9 .'/&-]{2,40})", message)
+        if station_match:
+            slots["stop_name"] = {"value": station_match.group(1).strip(), "source": "user_explicit", "confidence": 0.6}
+        if "manhattan" in message.lower() or "曼哈顿" in message:
+            slots["direction"] = {"value": "toward Manhattan", "source": "user_explicit", "confidence": 0.85}
+    else:
+        match = re.search(r"从(.+?)(?:到|去)(.+?)(?:坐|要|多久|$)", message)
+        if match:
+            slots["origin"] = {"value": match.group(1).strip(), "source": "user_explicit", "confidence": 0.8}
+            slots["destination"] = {"value": match.group(2).strip(), "source": "user_explicit", "confidence": 0.8}
+    return {"domain_user_query": message, "slots": slots, "domain_context": {"departure_count": 2, "cache_ttl_seconds": 60}}
+
+
 def _needs_area(message: str) -> bool:
     lower = message.lower()
     keywords = ["安全", "犯罪", "房租", "租金", "预算", "附近", "这个区", "区域", "便利", "娱乐", "超市", "酒吧", "rent", "housing", "safe", "crime", "nearby", "area", "amenity"]
@@ -217,8 +283,15 @@ def ready() -> dict[str, Any]:
         neighborhood = "ok"
     except Exception as exc:
         neighborhood = f"unavailable: {exc}"
-    status = "ok" if profile == "ok" and housing == "ok" and neighborhood == "ok" else "degraded"
-    return {"status": status, "dependencies": {"profile-agent": profile, "housing-agent": housing, "neighborhood-agent": neighborhood}}
+    try:
+        with httpx.Client(timeout=settings.request_timeout_seconds) as client:
+            response = client.get(f"{settings.transit_agent_url.rstrip('/')}/ready")
+            response.raise_for_status()
+        transit = "ok"
+    except Exception as exc:
+        transit = f"unavailable: {exc}"
+    status = "ok" if profile == "ok" and housing == "ok" and neighborhood == "ok" and transit == "ok" else "degraded"
+    return {"status": status, "dependencies": {"profile-agent": profile, "housing-agent": housing, "neighborhood-agent": neighborhood, "transit-agent": transit}}
 
 
 @app.get("/debug/prompts")
@@ -304,7 +377,38 @@ def chat(request: ChatRequest) -> dict[str, Any]:
     area_name = (active_area or {}).get("area_name", "当前区域")
     sources = [{"name": "orchestrator-agent rule fallback", "type": "system", "updated_at": now_iso()}]
 
-    if any(k in message or k in lower for k in ["预算", "房租", "租金", "rent", "1b", "1br", "listing", "房源", "公寓"]):
+    if _is_transit_query(message):
+        task_type = _transit_task_type(message)
+        transit_response = _transit_a2a(task_type, trace, request.session_id, _build_transit_payload(message))
+        if transit_response.get("status") == "clarification_required":
+            answer = transit_response.get("payload", {}).get("clarification") or "我还需要一个通勤相关信息。"
+            next_action = "ask_follow_up"
+            missing = transit_response.get("payload", {}).get("missing_slots", [])
+            sources = [{"name": "transit-agent", "type": "a2a", "updated_at": now_iso()}]
+        elif transit_response.get("status") == "no_data":
+            answer = "当前实时通勤数据表中没有找到匹配结果。可以确认站点/线路/方向，或者等后续接入 MTA 实时 API 后再查。"
+            next_action = "respond_final"
+            missing = []
+            sources = [{"name": "mcp-transit", "type": "fixed_tool", "updated_at": now_iso()}]
+        else:
+            result = transit_response.get("payload", {}).get("transit_result", {})
+            metrics = result.get("derived_metrics", {})
+            if result.get("transit_result_type") == "next_departure":
+                departures = metrics.get("departures") or []
+                if departures:
+                    first = departures[0]
+                    answer = f"{metrics.get('route_id')} 线 {metrics.get('stop_name')} 往 {metrics.get('direction')} 的下一班预计出发时间是 {first.get('departure_time') or first.get('arrival_time')}。"
+                else:
+                    answer = "当前实时 feed 没有返回匹配的下一班车。"
+            else:
+                answer = (
+                    f"从 {metrics.get('origin_text') or metrics.get('origin')} 到 {metrics.get('destination_text') or metrics.get('destination')} "
+                    f"坐 {metrics.get('mode')} 的缓存通勤时间约为 {metrics.get('total_minutes')} 分钟。"
+                )
+            next_action = "respond_final"
+            missing = []
+            sources = [{"name": "transit-agent", "type": "a2a", "updated_at": now_iso()}, {"name": "mcp-transit", "type": "fixed_tool", "updated_at": now_iso()}]
+    elif any(k in message or k in lower for k in ["预算", "房租", "租金", "rent", "1b", "1br", "listing", "房源", "公寓"]):
         housing_payload = _build_housing_payload(message, profile, area, budget)
         housing_response = _housing_a2a(_housing_task_type(message), trace, request.session_id, housing_payload)
         if housing_response.get("status") == "clarification_required":

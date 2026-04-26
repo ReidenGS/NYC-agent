@@ -10,8 +10,10 @@
 | `orchestrator-agent` | `8010` | 主 Agent，负责会话理解、缺槽追问、profile 读取/更新、后续 Domain Agent 调度入口 | 已实现最小链路：session、profile、chat、prompt debug |
 | `housing-agent` | `8011` | 租房领域 Agent，负责生成 housing SQL plan、调用 MCP SQL、返回结构化租金/预算匹配结果 | 已接入 Orchestrator 的租金/预算问题 |
 | `neighborhood-agent` | `8012` | 区域画像 Agent，负责安全、便利设施、娱乐设施和区域概览 SQL plan | 已接入 Orchestrator 的安全/便利/娱乐问题 |
+| `transit-agent` | `8013` | 通勤领域 Agent，负责下一班车、实时/缓存通勤时间工具调用 | 已接入 Orchestrator 的地铁/公交/通勤问题 |
 | `profile-agent` | `8014` | 用户画像状态 Agent，负责把 Orchestrator 的 profile 任务转成 MCP 工具调用 | 已实现 A2A `/a2a` 入口 |
 | `mcp-sql` | `8020` | 通用只读 SQL MCP，按 domain 白名单校验并执行 SQL | 已支持 `housing/safety/amenity/entertainment` 表白名单，当前 housing 已使用 |
+| `mcp-transit` | `8025` | Transit 固定工具 MCP，读取站点维表、实时预测表和通勤缓存表 | 已实现站点匹配、下一班车查询、通勤缓存查询 |
 | `mcp-profile` | `8026` | Profile MCP 工具服务，负责 session/profile 的读写 | 已实现 MCP-style HTTP tool endpoint，当前为内存存储 |
 | `data-sync-service` | `8030` | 数据同步与入库任务 | Claude 已完成主要同步任务，继续沿用同一 Postgres |
 | `postgres` | `5432` | PostGIS 数据库 | 统一数据库，不要为新服务另起 DB |
@@ -27,6 +29,8 @@ Frontend
         -> mcp-sql
       -> neighborhood-agent
         -> mcp-sql
+      -> transit-agent
+        -> mcp-transit
       -> profile-agent
         -> mcp-profile
 ```
@@ -46,7 +50,9 @@ PROFILE_AGENT_URL_DOCKER=http://profile-agent:8014
 MCP_PROFILE_URL_DOCKER=http://mcp-profile:8026
 HOUSING_AGENT_URL_DOCKER=http://housing-agent:8011
 NEIGHBORHOOD_AGENT_URL_DOCKER=http://neighborhood-agent:8012
+TRANSIT_AGENT_URL_DOCKER=http://transit-agent:8013
 MCP_SQL_URL_DOCKER=http://mcp-sql:8020
+MCP_TRANSIT_URL_DOCKER=http://mcp-transit:8025
 DATABASE_URL_SQL_DOCKER=postgresql+psycopg://nyc_agent:nyc_agent_password@postgres:5432/nyc_agent
 ```
 
@@ -128,6 +134,40 @@ DATABASE_URL_SQL_DOCKER=postgresql+psycopg://nyc_agent:nyc_agent_password@postgr
 - 使用 SQLAlchemy 参数绑定执行
 - 设置 `statement_timeout`
 
+### `transit-agent`
+
+| Method | Path | 用途 |
+| --- | --- | --- |
+| `GET` | `/health` | 服务健康检查 |
+| `GET` | `/ready` | 检查 `mcp-transit` 是否可用 |
+| `GET` | `/debug/prompts` | 查看 transit prompt |
+| `POST` | `/a2a` | 接收 Orchestrator 的 transit A2A 任务 |
+
+当前支持：
+
+| task_type | 能力 |
+| --- | --- |
+| `transit.next_departure` | 根据 mode/route/stop/direction 查询下一班车 |
+| `transit.commute_time` | 查询缓存通勤时间 |
+| `transit.realtime_commute` | 查询实时/缓存通勤结果 |
+
+### `mcp-transit`
+
+| Method | Path | 用途 |
+| --- | --- | --- |
+| `GET` | `/health` | 服务健康检查 |
+| `GET` | `/ready` | 检查 Postgres 是否可用 |
+| `GET` | `/tools` | 查看可用工具 |
+| `POST` | `/tools/resolve_station_or_stop` | 根据站名/模式匹配站点 |
+| `POST` | `/tools/get_next_departures` | 查询实时预测表中的下一班车 |
+| `POST` | `/tools/get_realtime_commute` | 查询短期通勤结果缓存 |
+
+当前限制：
+
+- 先读取现有 `app_transit_*` 表，不直接拉 MTA API。
+- 如果实时预测表或缓存表为空，会返回 `no_data`，不会编造车次。
+- 后续可以在 `mcp-transit` 内部补 GTFS-RT / Bus Time 拉取，不需要改 Agent A2A 协议。
+
 ### `mcp-profile`
 
 | Method | Path | 用途 |
@@ -149,7 +189,7 @@ DATABASE_URL_SQL_DOCKER=postgresql+psycopg://nyc_agent:nyc_agent_password@postgr
 
 ```bash
 cp .env.example .env
-docker compose up -d postgres redis mcp-profile profile-agent mcp-sql housing-agent neighborhood-agent orchestrator-agent api-gateway
+docker compose up -d postgres redis mcp-profile profile-agent mcp-sql housing-agent neighborhood-agent mcp-transit transit-agent orchestrator-agent api-gateway
 ```
 
 仅本机调试三个 Agent 服务时，可以使用：

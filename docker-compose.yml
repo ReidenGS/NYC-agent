@@ -164,6 +164,47 @@ services:
       timeout: 5s
       retries: 5
 
+  mcp-transit:
+    build:
+      context: .
+      dockerfile: ./services/mcp-transit/Dockerfile
+    container_name: nyc_agent_mcp_transit
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /app/shared
+      DATABASE_URL_SYNC: ${DATABASE_URL_SYNC_DOCKER:-postgresql+psycopg://nyc_agent:nyc_agent_password@postgres:5432/nyc_agent}
+      TRANSIT_STATEMENT_TIMEOUT_MS: ${TRANSIT_STATEMENT_TIMEOUT_MS:-3000}
+    ports:
+      - "${MCP_TRANSIT_PORT:-8025}:8025"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8025/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  transit-agent:
+    build:
+      context: .
+      dockerfile: ./services/transit-agent/Dockerfile
+    container_name: nyc_agent_transit_agent
+    restart: unless-stopped
+    depends_on:
+      mcp-transit:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /app/shared
+      MCP_TRANSIT_URL: ${MCP_TRANSIT_URL_DOCKER:-http://mcp-transit:8025}
+    ports:
+      - "${TRANSIT_AGENT_PORT:-8013}:8013"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8013/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   orchestrator-agent:
     build:
       context: .
@@ -177,11 +218,14 @@ services:
         condition: service_healthy
       neighborhood-agent:
         condition: service_healthy
+      transit-agent:
+        condition: service_healthy
     environment:
       PYTHONPATH: /app/shared
       PROFILE_AGENT_URL: ${PROFILE_AGENT_URL_DOCKER:-http://profile-agent:8014}
       HOUSING_AGENT_URL: ${HOUSING_AGENT_URL_DOCKER:-http://housing-agent:8011}
       NEIGHBORHOOD_AGENT_URL: ${NEIGHBORHOOD_AGENT_URL_DOCKER:-http://neighborhood-agent:8012}
+      TRANSIT_AGENT_URL: ${TRANSIT_AGENT_URL_DOCKER:-http://transit-agent:8013}
     ports:
       - "${ORCHESTRATOR_AGENT_PORT:-8010}:8010"
     healthcheck:
