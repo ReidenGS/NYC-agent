@@ -5,3 +5,4 @@ pydantic-settings==2.6.1
 SQLAlchemy==2.0.36
 psycopg[binary]==3.2.3
 gtfs-realtime-bindings==1.0.0
+httpx==0.28.1
