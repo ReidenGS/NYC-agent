@@ -73,8 +73,14 @@ services:
       dockerfile: ./services/mcp-profile/Dockerfile
     container_name: nyc_agent_mcp_profile
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       PYTHONPATH: /app/shared
+      PROFILE_STORE_BACKEND: ${PROFILE_STORE_BACKEND:-postgres}
+      DATABASE_URL_SYNC: ${DATABASE_URL_SYNC_DOCKER:-postgresql+psycopg://nyc_agent:nyc_agent_password@postgres:5432/nyc_agent}
+      PROFILE_STATEMENT_TIMEOUT_MS: ${PROFILE_STATEMENT_TIMEOUT_MS:-3000}
     ports:
       - "${MCP_PROFILE_PORT:-8026}:8026"
     healthcheck:

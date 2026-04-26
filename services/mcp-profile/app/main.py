@@ -43,6 +43,11 @@ def health() -> dict[str, str]:
     return {'status': 'ok', 'service': 'mcp-profile'}
 
 
+@app.get('/ready')
+def ready() -> dict[str, Any]:
+    return {'status': 'ok', 'dependencies': store.backend_status()}
+
+
 @app.get('/tools')
 def tools() -> dict[str, list[str]]:
     return {'tools': ['create_session', 'get_snapshot', 'patch_slots', 'update_weights', 'update_comparison_areas', 'save_conversation_summary', 'save_last_response_refs', 'delete_session']}

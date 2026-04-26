@@ -15,7 +15,7 @@
 | `weather-agent` | `8015` | 天气领域 Agent，负责当前天气和小时预报工具调用 | 已接入 Orchestrator 的天气问题 |
 | `mcp-sql` | `8020` | 通用只读 SQL MCP，按 domain 白名单校验并执行 SQL | 已支持 `housing/safety/amenity/entertainment` 表白名单，当前 housing 已使用 |
 | `mcp-transit` | `8025` | Transit 固定工具 MCP，读取站点维表、实时预测表和通勤缓存表 | 已实现站点匹配、下一班车查询、通勤缓存查询 |
-| `mcp-profile` | `8026` | Profile MCP 工具服务，负责 session/profile 的读写 | 已实现 MCP-style HTTP tool endpoint，当前为内存存储 |
+| `mcp-profile` | `8026` | Profile MCP 工具服务，负责 session/profile 的读写 | 已实现 Postgres 优先持久化，数据库不可用时自动 memory fallback |
 | `mcp-weather` | `8027` | Weather 固定工具 MCP，调用 National Weather Service API | 已实现当前天气和小时预报 |
 | `data-sync-service` | `8030` | 数据同步与入库任务 | Claude 已完成主要同步任务，继续沿用同一 Postgres |
 | `postgres` | `5432` | PostGIS 数据库 | 统一数据库，不要为新服务另起 DB |
@@ -60,6 +60,8 @@ MCP_SQL_URL_DOCKER=http://mcp-sql:8020
 MCP_TRANSIT_URL_DOCKER=http://mcp-transit:8025
 MCP_WEATHER_URL_DOCKER=http://mcp-weather:8027
 DATABASE_URL_SQL_DOCKER=postgresql+psycopg://nyc_agent:nyc_agent_password@postgres:5432/nyc_agent
+PROFILE_STORE_BACKEND=postgres
+PROFILE_STATEMENT_TIMEOUT_MS=3000
 OPENAI_API_KEY=
 OPENAI_BASE_URL=https://api.openai.com/v1
 USE_LLM_SQL_PLANNER=true
@@ -240,6 +242,13 @@ SQL planner 模式：
 | `POST` | `/tools/save_last_response_refs` | 保存上一轮回复引用 |
 | `POST` | `/tools/delete_session` | 删除 session |
 
+当前存储策略：
+
+- 默认 `PROFILE_STORE_BACKEND=postgres`，读写 `app_session_profile`。
+- `preferences`、`comparison_areas`、`conversation_summary`、`last_response_refs` 存入 `slots_json`。
+- `target_area_id`、预算、通勤目的地、权重等核心字段写入结构化列。
+- 如果 Postgres 不可用，服务自动使用内存 fallback，保证本地开发链路不阻塞。
+
 ## 4. 本地运行
 
 启动完整基础链路：
@@ -291,8 +300,7 @@ profile.budget.max = 3000
 
 后续继续落地时建议按这个顺序：
 
-1. 把 `mcp-profile` 从内存存储替换为 Postgres/Redis 持久化，保持工具接口不变。
-2. 在 `mcp-transit` 内部补 MTA GTFS-RT / Bus Time 拉取和短缓存。
-3. 把 `mcp-weather` 的 seed 坐标解析替换为从 `app_area_dimension` 计算 centroid。
-4. 为 `housing-agent` / `neighborhood-agent` 增加 LLM planner 的 mock 单元测试，覆盖 JSON 解析失败和 validator 拒绝后的 fallback。
-5. 如果简历展示需要显式 MCP 拆分，可在 `mcp-sql` 外再加 `mcp-safety`、`mcp-amenity`、`mcp-entertainment` 薄封装服务，内部仍复用同一 SQL Validator。
+1. 在 `mcp-transit` 内部补 MTA GTFS-RT / Bus Time 拉取和短缓存。
+2. 把 `mcp-weather` 的 seed 坐标解析替换为从 `app_area_dimension` 计算 centroid。
+3. 为 `housing-agent` / `neighborhood-agent` 增加 LLM planner 的 mock 单元测试，覆盖 JSON 解析失败和 validator 拒绝后的 fallback。
+4. 如果简历展示需要显式 MCP 拆分，可在 `mcp-sql` 外再加 `mcp-safety`、`mcp-amenity`、`mcp-entertainment` 薄封装服务，内部仍复用同一 SQL Validator。
