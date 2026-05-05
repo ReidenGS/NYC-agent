@@ -302,9 +302,12 @@ def run(trigger_type: str = "manual") -> JobResult:
                     skipped_outside += 1
             session.commit()
 
-        # 4. Aggregate today's snapshot into the market table.
+        # 4. Aggregate today's snapshot into the market table, then refresh
+        # rent_index_value on app_area_metrics_daily (derived; see _rent_refresh).
         with db_session() as session:
             session.execute(AGGREGATE_SQL)
+            from app.jobs._rent_refresh import refresh_rent_index
+            refresh_rent_index(session)
 
         ctx.rows_fetched = seen
         ctx.rows_written = written

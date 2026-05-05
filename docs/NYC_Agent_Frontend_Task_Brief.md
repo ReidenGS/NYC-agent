@@ -38,6 +38,7 @@
 - TypeScript
 - Vite
 - CSS Modules / 普通 CSS / Tailwind 三选一
+- MapLibre GL JS 基础地图容器（MVP 必须）
 
 推荐使用：
 - TanStack Query：API 请求、缓存、加载状态
@@ -62,7 +63,7 @@
 8. 数据来源和更新时间必须展示
 9. 地图图层必须通过 `map_layer_id` 或 `/areas/{area_id}/map-layers` 加载
 10. Debug 信息仅在 debug 模式显示
-11. 地图必须优先使用真实 MapLibre GL JS 实例，不要用静态图片或纯 Div 模拟正式地图
+11. MVP 必须使用真实 MapLibre GL JS 实例提供基础地图容器、目标区域聚焦/高亮和 fallback；高级热力、聚类、多图层联动为加分项
 12. MapTiler 只作为底图瓦片和样式服务，地图拖拽/缩放/图层交互由 MapLibre GL JS 实现
 
 ## 5. 页面结构
@@ -163,15 +164,16 @@ NYC Housing Agent Dashboard
 - 使用真实 MapLibre GL JS 实例展示地图
 - 支持鼠标/触控拖拽平移
 - 支持滚轮缩放、双击缩放和控件缩放
-- 支持图层切换
-- 支持点击 marker / POI 后展示 popup
+- 支持基础图层开关；多图层联动和高级样式为加分项
+- 支持点击 marker / POI 后展示 popup（若后端返回 marker 图层）
 - 支持根据目标区域 `fitBounds` 或 `flyTo` 聚焦
 
 图层：
-- safety choropleth
-- crime heatmap / marker
-- entertainment markers
-- convenience markers
+- target area highlight（MVP 必须）
+- safety choropleth（加分）
+- crime heatmap / marker（加分）
+- entertainment markers（加分）
+- convenience markers（加分）
 - rental markers，后续可选
 
 要求：

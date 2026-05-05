@@ -1,0 +1,207 @@
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+from fastapi import FastAPI
+from pydantic import BaseModel, Field
+from sqlalchemy import create_engine, text
+
+from app.config import settings
+from nyc_agent_shared.redis_cache import RedisCache
+from nyc_agent_shared.time import now_iso
+
+app = FastAPI(title="NYC Agent MCP Weather", version="0.1.0")
+engine = create_engine(settings.sqlalchemy_database_url, pool_pre_ping=True, pool_size=2, max_overflow=1)
+cache = RedisCache(settings.redis_url)
+
+AREA_COORDS = {
+    "QN0101": {"area_name": "Astoria", "latitude": 40.7644, "longitude": -73.9235},
+    "QN0102": {"area_name": "Long Island City", "latitude": 40.7447, "longitude": -73.9485},
+    "BK0101": {"area_name": "Williamsburg", "latitude": 40.7081, "longitude": -73.9571},
+    "BK0102": {"area_name": "Greenpoint", "latitude": 40.7306, "longitude": -73.9540},
+    "MN0101": {"area_name": "Midtown", "latitude": 40.7549, "longitude": -73.9840},
+}
+
+AREA_COORDS_SQL = text(
+    """
+    SELECT area_id, area_name,
+           ST_Y(ST_PointOnSurface(geom)::geometry) AS latitude,
+           ST_X(ST_PointOnSurface(geom)::geometry) AS longitude
+    FROM app_area_dimension
+    WHERE geom IS NOT NULL
+      AND (
+        (:area_id IS NOT NULL AND area_id = :area_id)
+        OR (:area_name IS NOT NULL AND area_name ILIKE :area_name_like)
+      )
+    ORDER BY
+      CASE
+        WHEN :area_id IS NOT NULL AND area_id = :area_id THEN 0
+        WHEN :area_name IS NOT NULL AND lower(area_name) = lower(:area_name) THEN 1
+        ELSE 2
+      END,
+      area_name ASC
+    LIMIT 1
+    """
+)
+
+
+class ToolRequest(BaseModel):
+    session_id: str | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+def mcp_response(status: str, tool: str, data: Any, *, error: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "status": status,
+        "tool": tool,
+        "data": data,
+        "source": [{"name": "National Weather Service API", "type": "weather_api", "url": "https://api.weather.gov", "timestamp": now_iso()}],
+        "timestamp": now_iso(),
+        "confidence": 1.0 if status == "success" else 0.0,
+        "data_quality": "realtime" if status == "success" else "unknown",
+        "error": error,
+    }
+
+
+def resolve_coords_from_db(args: dict[str, Any]) -> dict[str, Any] | None:
+    area_id = str(args.get("area_id") or "").strip() or None
+    area_name = str(args.get("area_name") or "").strip() or None
+    if not area_id and not area_name:
+        return None
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"SET LOCAL statement_timeout = {int(settings.weather_statement_timeout_ms)}"))
+            row = conn.execute(
+                AREA_COORDS_SQL,
+                {
+                    "area_id": area_id,
+                    "area_name": area_name,
+                    "area_name_like": f"%{area_name}%" if area_name else None,
+                },
+            ).first()
+    except Exception:
+        return None
+    if not row:
+        return None
+    data = dict(row._mapping)
+    return {
+        "area_id": data.get("area_id"),
+        "area_name": data.get("area_name"),
+        "latitude": float(data["latitude"]),
+        "longitude": float(data["longitude"]),
+        "coord_source": "app_area_dimension.geom",
+    }
+
+
+def resolve_coords(args: dict[str, Any]) -> dict[str, Any] | None:
+    if args.get("latitude") is not None and args.get("longitude") is not None:
+        return {"latitude": float(args["latitude"]), "longitude": float(args["longitude"]), "area_name": args.get("area_name"), "coord_source": "request"}
+    db_coords = resolve_coords_from_db(args)
+    if db_coords:
+        return db_coords
+    area_id = args.get("area_id")
+    if area_id and area_id in AREA_COORDS:
+        return {**AREA_COORDS[area_id], "area_id": area_id, "coord_source": "seed_fallback"}
+    area_name = str(args.get("area_name") or "").lower()
+    for coords in AREA_COORDS.values():
+        if area_name and area_name in coords["area_name"].lower():
+            return {**coords, "coord_source": "seed_fallback"}
+    return None
+
+
+def nws_get(url: str) -> dict[str, Any]:
+    """GET an NWS endpoint with a Redis-backed JSON cache (TTL = 30 min).
+    NWS forecasts only change every ~hour, so this cuts API hits hard
+    without sacrificing freshness."""
+    cache_key = f"weather:nws:{url}"
+
+    def _producer():
+        headers = {"User-Agent": settings.nws_user_agent, "Accept": "application/geo+json, application/json"}
+        with httpx.Client(timeout=settings.request_timeout_seconds, headers=headers) as client:
+            response = client.get(url)
+            response.raise_for_status()
+            return response.json()
+
+    return cache.get_or_set_json(cache_key, settings.weather_cache_ttl_seconds, _producer)
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok", "service": "mcp-weather"}
+
+
+@app.get("/ready")
+def ready() -> dict[str, Any]:
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("SELECT 1"))
+        db = "ok"
+    except Exception as exc:
+        db = f"unavailable: {exc}"
+    redis_status = "ok" if cache.client is not None else "disabled"
+    return {"status": "ok", "dependencies": {"nws": "on_demand", "postgres": db, "redis": redis_status}}
+
+
+@app.get("/tools")
+def tools() -> dict[str, list[str]]:
+    return {"tools": ["get_current_weather", "get_hourly_forecast"]}
+
+
+@app.post("/tools/get_current_weather")
+def get_current_weather(request: ToolRequest) -> dict[str, Any]:
+    coords = resolve_coords(request.arguments)
+    if not coords:
+        return mcp_response("validation_error", "get_current_weather", None, error={"code": "MISSING_ARGUMENT", "message": "area_id or latitude/longitude is required.", "retryable": False})
+    try:
+        points = nws_get(f"https://api.weather.gov/points/{coords['latitude']},{coords['longitude']}")
+        hourly_url = points["properties"]["forecastHourly"]
+        hourly = nws_get(hourly_url)
+        periods = hourly["properties"].get("periods", [])
+    except Exception as exc:
+        return mcp_response("dependency_failed", "get_current_weather", None, error={"code": "NWS_API_ERROR", "message": str(exc.__class__.__name__), "retryable": True})
+    if not periods:
+        return mcp_response("no_data", "get_current_weather", None)
+    first = periods[0]
+    return mcp_response("success", "get_current_weather", {
+        "area_name": coords.get("area_name"),
+        "latitude": coords["latitude"],
+        "longitude": coords["longitude"],
+        "coord_source": coords.get("coord_source"),
+        "temperature": first.get("temperature"),
+        "temperature_unit": first.get("temperatureUnit"),
+        "short_forecast": first.get("shortForecast"),
+        "wind_speed": first.get("windSpeed"),
+        "wind_direction": first.get("windDirection"),
+        "start_time": first.get("startTime"),
+        "end_time": first.get("endTime"),
+    })
+
+
+@app.post("/tools/get_hourly_forecast")
+def get_hourly_forecast(request: ToolRequest) -> dict[str, Any]:
+    coords = resolve_coords(request.arguments)
+    hours = max(1, min(int(request.arguments.get("hours") or 6), 24))
+    if not coords:
+        return mcp_response("validation_error", "get_hourly_forecast", None, error={"code": "MISSING_ARGUMENT", "message": "area_id or latitude/longitude is required.", "retryable": False})
+    try:
+        points = nws_get(f"https://api.weather.gov/points/{coords['latitude']},{coords['longitude']}")
+        hourly = nws_get(points["properties"]["forecastHourly"])
+        periods = hourly["properties"].get("periods", [])[:hours]
+    except Exception as exc:
+        return mcp_response("dependency_failed", "get_hourly_forecast", None, error={"code": "NWS_API_ERROR", "message": str(exc.__class__.__name__), "retryable": True})
+    return mcp_response("success" if periods else "no_data", "get_hourly_forecast", {"area_name": coords.get("area_name"), "latitude": coords["latitude"], "longitude": coords["longitude"], "coord_source": coords.get("coord_source"), "periods": periods})
+
+
+# Cut 8.5 — mount the FastMCP-protocol surface at /mcp. The legacy
+# /tools/* REST routes above stay as the source of truth for orchestrator
+# A2A calls; this mount is for external MCP clients (Claude Desktop / MCP
+# Inspector / Cursor). Imported AT MODULE BOTTOM so app.mcp_server can
+# import the legacy handlers above without circular reference.
+try:
+    from python_a2a.mcp.transport.fastapi import create_fastapi_app
+    from app.mcp_server import mcp
+    app.mount("/mcp", create_fastapi_app(mcp))
+except Exception as _mcp_mount_exc:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger("mcp-weather").warning("MCP mount skipped: %s", _mcp_mount_exc)

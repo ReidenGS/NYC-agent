@@ -5,7 +5,7 @@
 
 目标：
 - 一周内跑通完整业务闭环
-- 明确展示 `A2A + MCP + FastAPI + PostGIS` 的工程能力
+- 明确展示 `A2A + MCP + FastAPI/Flask + PostGIS` 的工程能力
 - 避免把所有逻辑塞进一个单体服务
 
 运行方式：
@@ -15,15 +15,92 @@
 - 生产演进时扩展 JWT/OAuth、任务队列、监控与限流
 
 ## 2. 技术选型
-核心技术：
-- Python 3.11+
-- FastAPI：API Gateway 与普通 HTTP 服务
-- python-a2a：Agent-to-Agent 通信
-- `python_a2a.mcp.FastMCP`：独立 MCP 工具服务
-- PostgreSQL + PostGIS：业务数据、空间查询、区域归属
-- Redis：实时通勤短缓存、天气短缓存、API 限频、临时结果缓存
-- APScheduler：定时同步外部 API 数据
-- 可配置 LLM Provider：默认 OpenAI，保留切换 Anthropic/Gemini/Ollama 的接口
+
+| 层 | 选择 | 关键依赖 | 说明 |
+|---|---|---|---|
+| 语言 / 运行时 | Python 3.11+ | — | — |
+| HTTP 服务框架（非 agent） | FastAPI | `fastapi`, `uvicorn` | api-gateway / data-sync-service / 7 个 mcp-* 服务都用 FastAPI（含 Pydantic 路由校验、auto OpenAPI 文档） |
+| HTTP 服务框架（agent） | Flask | `flask` | 6 个 A2A agent（orchestrator + housing/neighborhood/transit/weather/profile）用 Flask；`python_a2a.A2AServer.setup_routes(app)` 是 Flask-native，agent 同 Flask app 内顺手挂 `/health /ready /debug/prompts` |
+| **A2A 通信协议** | **python-a2a** (themanojdesai) | `python-a2a` | Agent-to-Agent；server 端用 `A2AServer`，client 端用 `A2AClient`；消息类型用 `python_a2a.Message` |
+| **MCP 工具协议** | **python_a2a.mcp.FastMCP** | （随 python-a2a） | 7 个 mcp-* 服务用 `@mcp.tool()` 装饰器注册工具；通过 `python_a2a.mcp.transport.fastapi.create_fastapi_app(mcp)` mount 到 mcp 服务的 FastAPI app `/mcp/` 路径下 |
+| **LLM agent 编排** | **LangGraph** | `langgraph`, `langchain-core`, `langchain-openai` | orchestrator 用 LangGraph state machine 跑 ReAct 6 节点；其它 agent 内部仍是单次 LLM 调用，不引 LangGraph |
+| **地名解析 RAG** | **Embedding 检索 + 阈值拒识** | `langchain-openai`（`OpenAIEmbeddings`）, `psycopg` | orchestrator `understand` 节点对 `target_area` 执行向量召回；高置信自动映射 `area_id`，低置信触发候选确认，不强行匹配 |
+| **LLM 输出解析** | **PydanticOutputParser** (经典 parser 路径) | `langchain-core` | 用 Pydantic 模型生成 schema 描述塞进 prompt，从 LLM 文本输出 parse 回模型；provider-agnostic，便于切换 OpenAI/Anthropic/Ollama |
+| **会话短期记忆** | **LangGraph PostgresSaver + MessagesState** | `langgraph-checkpoint-postgres` | 同 session 内 messages + state 自动 checkpoint；thread_id = session_id；checkpointer 用 `checkpoints / checkpoint_writes / checkpoint_blobs` 三张独立表，跟业务 schema 物理隔离 |
+| **跨 session 长期记忆** | **不做**（MVP 阶段） | — | 用户每次刷新即新 session；mcp-profile 退化为按需快照服务（见 §2.1） |
+| **结构化用户画像** | **mcp-profile** | — | 作为持久化 profile 快照与前端状态面板后端；orchestrator 会话内以 LangGraph state 为准，不每轮 read |
+| **LangGraph state 类型** | **Pydantic BaseModel** | `pydantic` v2 | 跟项目其它 schema 风格一致，运行时校验；定义于 `shared/nyc_agent_shared/orchestrator_state.py` |
+| **A2A 消息类型** | **python-a2a 内置 `Message`/`Task`** | （随 python-a2a） | 跨 agent 通信的标准消息类型，可被任意 A2A 客户端互通 |
+| **缓存与限流** | **Redis 7** | `redis` (Python client) | 4 处用法（mcp-transit / mcp-weather / api-gateway / data-sync），见 §2.1 |
+| **数据库** | PostgreSQL 16 + PostGIS 3.4 | — | 业务数据、空间查询、LangGraph checkpointer 共用一个实例不同 schema |
+| **定时任务** | APScheduler | `apscheduler` | 仅 data-sync-service 内部使用 |
+| **可观测性** | **LangSmith** (SaaS) | `langsmith` (auto via langchain) | LangGraph 全 trace 自动上报；`LANGCHAIN_TRACING_V2=true` 一行开启；token 成本 + 每节点耗时在 web UI 可视化 |
+| **LLM Provider** | 默认 OpenAI；通过 PydanticOutputParser 兼容 Anthropic / Gemini / Ollama | `langchain-openai` 等 | — |
+
+### 不引入的技术
+- **LangChain 经典 AgentExecutor**：2026 年官方已标 legacy，新项目直接用 LangGraph
+- **Anthropic 官方 mcp Python SDK** / **fastmcp 独立版**：跟 python-a2a 不是一家，混用要写胶水
+- **a2a-sdk** (Google 官方)：与现有 doc 设计不一致，迁移成本大
+- **OpenTelemetry + Jaeger**：自托管基础设施增加；LangSmith SaaS 对 demo 阶段更省心
+- **LangGraph Store + pgvector** 长期向量记忆：跨 session 暂不做，无需引入
+
+## 2.1 各层职责边界
+
+### A. LangGraph state vs mcp-profile 分工
+- **LangGraph state**（按 session_id 自动 checkpoint）持有：
+  - `messages`：对话历史，由 `MessagesState` 自动追加
+  - `target_area_id` / `budget` / `weights` / `preferences` 等本次会话工作副本
+  - `pending_follow_up`：上一轮追问回填上下文
+- **mcp-profile** 持有的是同一组字段的**持久化快照**（写入条件见 §2.2），并服务前端 `/sessions/{id}/profile` 面板和显式 profile patch；它**不**承担"orchestrator 每轮读一次"的角色。
+- 单一真相：会话进行中以 LangGraph state 为准；session 初始化、显式 profile 更新、每轮短 summary 更新和推荐报告时同步到 mcp-profile。
+
+### B. PydanticOutputParser 在哪用
+两处用得上：
+1. **orchestrator Node 2 (understand)**：把用户消息解析成 `IntentResult`（intent / areas / constraints / persistable_field_updates）。
+2. **orchestrator Node 6 (respond)**：让 LLM 直接产出符合 `ChatResponseData` 模型的最终回答（message_type / answer / next_action / sources / data_quality）。
+
+domain agent 的 `housing-agent` / `neighborhood-agent` 自己的 SQL planner 用手写 prompt 字符串描述 schema 即可，**不强制**改造为 PydanticOutputParser；后续如果想统一，再迁移即可。
+
+### C. Redis 4 处用法
+| 调用方 | key 模式 | TTL | 目的 |
+|---|---|---|---|
+| `mcp-transit` | `transit:trip:{cache_key}` | 60s | 实时通勤计算结果短缓存，替代 PG 表 `app_transit_trip_result_cache` |
+| `mcp-weather` | `weather:hourly:{lat,lon}` | 30min | NWS API 响应缓存，避免 1 分钟连查 N 次 |
+| `api-gateway` | `ratelimit:chat:{session_id}` | 60s 滑窗 | token bucket 限流：每 session 每分钟 ≤ 30 次 /chat |
+| `data-sync-service` | `extapi:{provider}:{minute}` | 60s | Socrata / RentCast / Overpass 调用前查频次，避免短时间打爆 |
+
+Redis 不做 LangGraph checkpointer（那个走 PostgresSaver，需要持久性）。
+
+### D. LangSmith 接入
+环境变量启用：
+```
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=ls__...
+LANGCHAIN_PROJECT=nyc-agent
+```
+LangGraph 的所有节点、LLM 调用、tool 调用自动上报；不上报的部分（A2A 调用、Redis 操作）在 orchestrator 节点内手动 `langsmith.trace()` 包一下。
+
+## 2.2 Downstream agent 无状态契约
+
+`housing-agent` / `neighborhood-agent` / `transit-agent` / `weather-agent` 改造为**纯无状态函数**：
+- **不调** `mcp-profile.get_snapshot`
+- 完全信任 orchestrator 在 A2A payload 里塞的 `slots`
+- 每次 A2A 调用必须自带：
+  ```jsonc
+  {
+    "task_type": "neighborhood.crime_query",
+    "session_id": "sess_xxx",
+    "slots": {
+      "area_id":   {"value": "QN0101", "source": "user_explicit", "confidence": 0.95},
+      "area_name": {"value": "Astoria", "source": "session_memory", "confidence": 0.85},
+      // 其它 task_type 特有的 slots
+    },
+    "domain_context": { ... }
+  }
+  ```
+- 收到不齐的 slots → 返回 `status: "clarification_required"` 并列出 `missing_slots`，由 orchestrator 决定怎么追问
+
+这样 4 个 agent 之间互不依赖、独立可测、独立可重启。
 
 ## 3. 服务拆分
 MVP 服务：
@@ -88,7 +165,7 @@ MVP 可以先启动全部服务；如果调试压力大，优先保证：
 1. 前端调用 `POST /chat`
 2. `api-gateway` 转发给 `orchestrator-agent`
 3. `orchestrator-agent` 抽取意图、槽位、权重
-4. 如果缺少 `target_area`，返回追问
+4. 如果当前 intent 需要 `target_area` 且缺少该字段，返回追问
 5. 如果是租金/房源问题，调用 `housing-agent`
 6. 如果是犯罪/便利/娱乐问题，调用 `neighborhood-agent`
 7. 如果是实时通勤问题，调用 `transit-agent`
@@ -103,6 +180,9 @@ Agent 职责：
 - `transit-agent`：调用 `mcp-transit`，处理静态/实时通勤
 - `weather-agent`：调用 `mcp-weather`，处理当前/小时级天气
 - `profile-agent`：调用 `mcp-profile`，处理 session、slots、weights
+
+说明：
+- MVP 不单独实现 `decision-agent`。区域推荐、对比排序和解释先由 `orchestrator-agent` 的 recommendation 分支完成；后续如果推荐逻辑复杂化，再拆成独立 agent。
 
 ## 6. MCP 服务与工具清单
 详细设计见：[NYC_Agent_MCP_Design.md](</Users/jackiewen/Documents/NYC agent/NYC_Agent_MCP_Design.md>)。
@@ -367,8 +447,7 @@ Gateway 错误码：
 - 检查关键依赖是否可用
 - 至少检查 `orchestrator-agent`
 - 至少检查 `profile-agent`
-- 至少检查 `postgres`
-- 至少检查 `redis`
+- 不直接检查 `postgres` / `redis`；这些深层依赖由 `orchestrator-agent`、`profile-agent` 或 `/debug/dependencies` 汇总
 
 MCP 服务不由 Gateway 直接检查，因为 Gateway 不直接调用 MCP。更深层 MCP 健康状态由领域 Agent 或 Debug 接口检查。
 
@@ -406,7 +485,8 @@ API Gateway 做轻量 `session_id` 级限流。
 
 `GET /debug/dependencies`：
 - 展示 Gateway 可见依赖状态
-- 包括 `orchestrator-agent`、`profile-agent`、`postgres`、`redis`
+- 至少包括 `orchestrator-agent`、`profile-agent`
+- 可选汇总 `postgres`、`redis`、data-sync 和领域 Agent 健康状态，但应通过对应服务 readiness/debug 结果间接展示
 - 可选展示领域 Agent 健康状态
 - 不直接暴露 API Key 或外部 API 原始响应
 
@@ -415,7 +495,7 @@ API Gateway 做轻量 `session_id` 级限流。
 
 职责：
 - 接收 API Gateway 转发的 `/chat` 请求
-- 读取当前 `profile_snapshot` 和 `conversation_summary`
+- 从 LangGraph checkpointer 恢复当前 session state；仅在 session 初始化、显式 profile patch 或推荐生成时与 `profile-agent` / `mcp-profile` 同步快照
 - 执行自然语言理解
 - 识别 intent、slot、权重变化
 - 判断是否缺少必要信息
@@ -558,6 +638,7 @@ Slot 来源：
 - `user_explicit`：用户当前消息明确给出
 - `session_memory`：从历史 session profile 继承
 - `agent_inferred`：Agent 根据上下文推断
+- `rag_resolved`：地名 RAG 召回后高置信自动映射
 - `default`：系统默认值
 - `rule_fallback`：关键词 fallback parser 识别
 
@@ -573,15 +654,40 @@ Slot 来源：
 ```
 
 ### 8.6 缺槽与低置信度处理
+#### 8.6.1 地名解析 RAG（新增）
+适用场景：
+- `intent` 属于 `housing.*`、`neighborhood.*`、`weather.*`、`area.metrics_query`
+- 当前轮未从 LLM 直接抽到 `detected_areas`
+
+处理流程：
+1. 从 `app_area_dimension` 读取 `area_id/area_name/borough` 作为召回语料。
+2. 用 `OpenAIEmbeddings` 计算 query 向量并做 top-k 相似度排序。
+3. 按“命中阈值 + 间隔阈值”决策：
+   - 命中：写入 `detected_areas`（`source=rag_resolved`），继续正常路由。
+   - 拒识：不写入 `target_area`，进入 follow-up。
+4. 拒识时在 `constraints.area_resolution` 记录候选列表，`gate/respond` 用于生成“你是指 A 还是 B”的追问。
+
+默认拒识阈值（`services/orchestrator-agent/app/config.py`）：
+- `area_rag_min_similarity = 0.78`
+- `area_rag_min_margin = 0.04`（`top1 - top2`）
+- `area_rag_top_k = 5`
+
+解释：
+- 只满足 top1 高分但与 top2 太接近时，视为歧义，拒识。
+- 对不存在地名，禁止强行召回到最近区域。
+
+#### 8.6.2 缺槽规则（保持）
 缺槽规则：
 - required slots 非空时，不调用领域 Agent
 - 设置 `next_action=ask_follow_up`
 - 一次只追问一个最重要字段
 - 硬性必填槽位未补齐时，不进入业务执行
 
+#### 8.6.3 低置信关键槽位规则（更新）
 低置信度关键槽位规则：
 - 关键槽位包括 `target_area`、`origin`、`destination`、`station_or_origin`、`mode`
-- 关键槽位置信度 `< 0.75` 时不调用领域 Agent
+- 对 `target_area`：优先走地名 RAG 阈值决策；未通过则不调用领域 Agent
+- 对其他关键槽位：保持原低置信确认逻辑，不调用领域 Agent
 - 设置 `next_action=confirm_slots`
 - 追问用户确认
 
@@ -708,12 +814,12 @@ Orchestrator 保存短 `conversation_summary`，不默认保存完整聊天记�
 - trace 中可保存脱敏后的 `message_preview`
 
 ### 8.12 Prompt 模板拆分
-Orchestrator prompt 拆成多个模板。
+Orchestrator prompt 拆成多个模板。详细 Prompt 工程规则见：[NYC_Agent_Prompt_Design.md](</Users/jackiewen/Documents/NYC agent/docs/NYC_Agent_Prompt_Design.md>)。
 
 MVP 模板：
 - `understand_prompt`
 - `respond_prompt`
-- `summary_update_prompt`
+- `summary_update_prompt`（可选，不作为每轮默认第三次 LLM）
 - `boundary_prompt`
 
 `understand_prompt`：
@@ -729,9 +835,10 @@ MVP 模板：
 - 保留关键事实数字
 - 不编造
 - 不默认展示置信度
+- 同时输出本轮更新后的短 `conversation_summary`
 
 `summary_update_prompt`：
-- 更新短 `conversation_summary`
+- 可选：当 `respond_prompt` 输出缺失/损坏 summary，或需要离线压缩历史时更新短 `conversation_summary`
 - 只保留对后续决策有用的信息
 - 不保存完整聊天
 
@@ -839,7 +946,9 @@ Domain Agent 是领域执行层，负责把 Orchestrator 下发的结构化任�
 - `profile-agent`
 
 总体边界：
-- Domain Agent 接收 `domain_user_query + task_type + slots + profile_snapshot + conversation_summary`
+- Domain Agent 接收 `domain_user_query + task_type + slots + domain_context`
+- Domain Agent 不接收完整 `profile_snapshot` 或完整 `conversation_summary`
+- Orchestrator 负责从 profile/session 中筛选当前任务需要的最小 slots，再传给 Domain Agent
 - Domain Agent 不直接面对用户
 - Domain Agent 不生成最终用户回答
 - Domain Agent 返回统一结构化结果给 Orchestrator
@@ -847,6 +956,14 @@ Domain Agent 是领域执行层，负责把 Orchestrator 下发的结构化任�
 
 ### 9.1 Domain Agent 输入
 Orchestrator 调用 Domain Agent 时，必须传递领域相关原始表达，不能只传 `task_type` 和 slots。
+
+最小上下文规则：
+- Orchestrator 可以读取完整 profile 和 conversation summary
+- Domain Agent 不能读取完整 profile
+- Orchestrator 只把当前任务需要的字段解析成 slots，例如 `budget_monthly`、`bedroom_type`、`query_area`
+- 与领域执行有关但不是用户画像的配置放入 `domain_context`，例如 `currency`、`listing_limit`、`window_days`
+- Domain Agent 如果缺少必要 slot，返回 `clarification_required`，由 Orchestrator 统一追问用户
+
 
 输入示例：
 ```json
@@ -863,8 +980,10 @@ Orchestrator 调用 Domain Agent 时，必须传递领域相关原始表达，�
       "confidence": 0.95
     }
   },
-  "profile_snapshot": {},
-  "conversation_summary": "用户正在评估 Astoria，比较关注安全。",
+  "domain_context": {
+    "currency": "USD",
+    "window_days": 30
+  },
   "debug": false
 }
 ```
@@ -954,8 +1073,12 @@ shared_sql_safety_prompt
 - 不确定时返回 `unsupported_data_request`
 
 领域规则示例：
-- `housing-agent`：房源默认 `listing_status=active`，租金查询优先市场聚合表，再 fallback 到 benchmark
-- `neighborhood-agent`：安全问题必须带时间窗口，POI 问题优先分类聚合表，地图点位查询必须限制数量
+- `housing-agent`：详细 Prompt 与 SQL 规则见 [NYC_Agent_Prompt_Design.md](</Users/jackiewen/Documents/NYC agent/docs/NYC_Agent_Prompt_Design.md>) 的 Housing Agent 部分。租金查询优先 `market_daily -> listing_snapshot -> benchmark_monthly`；预算匹配使用样本感知规则；房源默认 active，active 无数据时 fallback 最近看到的 listing 并标记非实时库存。
+- `neighborhood-agent`：详细 Prompt 与 SQL 规则见 [NYC_Agent_Prompt_Design.md](</Users/jackiewen/Documents/NYC agent/docs/NYC_Agent_Prompt_Design.md>) 的 Neighborhood Agent 部分。安全问题默认近 30 天；POI 问题默认按 NTA 内分类聚合；点位 detail 限制 20 个；不生成最终个人化居住建议。
+- `transit-agent`：详细 Prompt 与工具调用规则见 [NYC_Agent_Prompt_Design.md](</Users/jackiewen/Documents/NYC agent/docs/NYC_Agent_Prompt_Design.md>) 的 Transit Agent 部分。不使用 SQL generation；只调用 `mcp-transit` 固定工具；下一班车强制要求 mode/route/stop/direction；通勤时间强制要求 origin/destination/mode；实时失败时按 cached/static fallback。
+- `weather-agent`：详细 Prompt 与工具调用规则见 [NYC_Agent_Prompt_Design.md](</Users/jackiewen/Documents/NYC agent/docs/NYC_Agent_Prompt_Design.md>) 的 Weather Agent 部分。不使用 SQL generation；只调用 `mcp-weather` 固定工具；允许继承 target_area；NWS grid 缓存 7 天、小时预报缓存 30-60 分钟；天气失败不阻塞核心租房回答。
+- `profile-agent`：详细 Prompt 与状态管理规则见 [NYC_Agent_Prompt_Design.md](</Users/jackiewen/Documents/NYC agent/docs/NYC_Agent_Prompt_Design.md>) 的 Profile Agent 部分。主要使用确定性规则和 `mcp-profile` 固定工具；不生成 SQL；不做推荐打分；只保存短 summary 和 last_response_refs。
+- `recommendation / decision`：不单独建 Agent，作为 Orchestrator 内部 Decision Module。详细规则见 [NYC_Agent_Prompt_Design.md](</Users/jackiewen/Documents/NYC agent/docs/NYC_Agent_Prompt_Design.md>) 的 Decision Module 部分；使用五维权重打分，缺失维度不计 0 分，天气不参与推荐打分。
 
 ### 9.6 SQL 输出 JSON Schema
 Domain Agent 的 LLM 输出必须是严格 JSON，后端用 Pydantic 校验。
@@ -1372,8 +1495,8 @@ Domain Agent 保存脱敏 SQL 和参数摘要到 trace。
 
 固定流程：
 1. 接收 Orchestrator 的结构化 task
-2. 校验 slots：`target_area` 必填，`target_time` 可选
-3. 如果缺少 `target_area`，返回 `clarification_required`
+2. 校验 slots：`target_area` 必填，`target_time` 可选；如果用户未显式给区域但 session state 已有 `target_area`，由 Orchestrator 在 A2A payload 中补齐
+3. 如果 payload 中仍缺少 `target_area`，返回 `clarification_required`
 4. 根据 `task_type` 调用固定 MCP tool
 5. MCP 内部处理 NWS `/points`、`forecastHourly` 和 Redis 短缓存
 6. `weather-agent` 归纳结构化天气结果
@@ -1445,9 +1568,9 @@ Domain Agent 保存脱敏 SQL 和参数摘要到 trace。
 - `error`
 
 规则：
-- Orchestrator 只依赖统一 envelope 判断下一步
-- `analysis_result` 可按领域自定义
-- `display_refs` 存地图、房源列表、表格等展示数据引用
+- Orchestrator 只依赖 `Message.content` 顶层字段（status / next_action / data_quality / error）判断下一步
+- `payload.analysis_result` 可按领域自定义
+- `payload.display_refs` 存地图、房源列表、表格等展示数据引用
 - 不直接生成最终用户回答
 
 ## 10. 数据与缓存
@@ -1897,7 +2020,7 @@ NYC agent/
 - PostGIS helper SQL
 
 ### 13.3 服务统一结构
-每个 FastAPI 服务使用统一结构：
+每个服务使用统一结构（FastAPI 服务和 Flask agent 共用同一目录骨架，只是 `main.py` 内部用的框架不同）：
 
 ```text
 service-name/
@@ -2007,7 +2130,7 @@ MVP 测试优先级：
 这部分可以在面试中描述为：
 
 ```text
-The backend is organized as a monorepo of independent FastAPI services. I separated gateway, orchestration, domain agents, MCP tools, and data sync. Shared schemas, clients, prompts, SQL validation, logging, and tracing live in common modules, which keeps the services independent but consistent.
+The backend is organized as a monorepo of independent HTTP services. Gateway, MCP tools, and data sync use FastAPI; the six A2A agents use Flask because the python-a2a `A2AServer` reference implementation is Flask-native. Shared schemas, clients, prompts, SQL validation, logging, and tracing live in common modules, which keeps the services independent but consistent.
 ```
 
 ## 14. LLM 配置

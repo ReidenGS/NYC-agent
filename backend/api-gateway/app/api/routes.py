@@ -15,12 +15,21 @@ from app.models.debug import TraceDebugResponse
 from app.models.profile import ProfilePatchRequest, ProfileSnapshot, SessionCreateRequest, SessionCreateResponse
 from app.models.transit import TransitRealtimeRequest, TransitRealtimeResponse
 from app.models.weather import WeatherResponse
-from app.services import mock_data
+from app.services import mock_data, real_data
 from app.services.orchestrator import OrchestratorService
+from app.services.remote_orchestrator import RemoteOrchestratorClient
 from app.stores.session_store import session_store
+
+# Optional Redis-backed rate limiter — fails open when Redis is unreachable.
+try:
+    from nyc_agent_shared.redis_cache import RedisCache  # type: ignore
+    _rate_limit_cache = RedisCache(settings.redis_url)
+except Exception:  # pragma: no cover
+    _rate_limit_cache = None
 
 router = APIRouter()
 orchestrator = OrchestratorService(session_store)
+remote_orchestrator = RemoteOrchestratorClient()
 
 
 def new_trace_id() -> str:
@@ -36,6 +45,17 @@ def error_envelope(code: str, message: str, *, session_id: str | None = None, st
     raise HTTPException(status_code=status_code, detail=payload.model_dump())
 
 
+def ensure_session_exists(session_id: str) -> None:
+    if settings.use_remote_orchestrator:
+        try:
+            remote_orchestrator.get_profile(session_id)
+            return
+        except Exception:
+            pass
+    if session_store.get(session_id) is None:
+        error_envelope('VALIDATION_ERROR', 'session_id not found', session_id=session_id, status_code=404)
+
+
 @router.get('/health')
 def health() -> dict:
     return {'status': 'ok', 'service': 'api-gateway'}
@@ -43,17 +63,51 @@ def health() -> dict:
 
 @router.get('/ready')
 def ready() -> dict:
-    return {'status': 'ok', 'dependencies': {'orchestrator': 'in_process_mock', 'profile_store': 'memory'}}
+    deps = {
+        'orchestrator': 'remote' if settings.use_remote_orchestrator else 'in_process_mock_fallback',
+        'profile_store': 'profile-agent' if settings.use_remote_orchestrator else 'memory',
+    }
+    probes = {
+        'orchestrator-agent': settings.orchestrator_agent_url if settings.use_remote_orchestrator else None,
+        'mcp-weather': settings.mcp_weather_url,
+        'mcp-transit': settings.mcp_transit_url,
+        'data-sync-service': settings.data_sync_base_url,
+    }
+    with httpx.Client(timeout=2.0) as client:
+        for name, base in probes.items():
+            if not base:
+                continue
+            try:
+                response = client.get(f"{base.rstrip('/')}/ready")
+                response.raise_for_status()
+                deps[name] = 'ok'
+            except Exception as exc:
+                deps[name] = f'unavailable: {exc}'
+    status = 'degraded' if any(str(value).startswith('unavailable:') for value in deps.values()) else 'ok'
+    return {'status': status, 'dependencies': deps}
 
 
 @router.post('/sessions', response_model=ApiEnvelope[SessionCreateResponse])
-def create_session(_: SessionCreateRequest | None = None):
+def create_session(request: SessionCreateRequest | None = None):
+    if settings.use_remote_orchestrator:
+        try:
+            data = remote_orchestrator.create_session(request.model_dump() if request else {})
+            return envelope(SessionCreateResponse.model_validate(data), session_id=data['session_id'])
+        except Exception as exc:
+            if not settings.allow_mock_fallback:
+                error_envelope('ORCHESTRATOR_UNAVAILABLE', f'orchestrator-agent unavailable: {exc}', status_code=503, retryable=True)
     profile = session_store.create()
     return envelope(SessionCreateResponse(session_id=profile.session_id, profile_snapshot=profile), session_id=profile.session_id)
 
 
 @router.get('/sessions/{session_id}/profile', response_model=ApiEnvelope[ProfileSnapshot])
 def get_profile(session_id: str):
+    if settings.use_remote_orchestrator:
+        try:
+            return envelope(ProfileSnapshot.model_validate(remote_orchestrator.get_profile(session_id)), session_id=session_id)
+        except Exception as exc:
+            if not settings.allow_mock_fallback:
+                error_envelope('ORCHESTRATOR_UNAVAILABLE', f'orchestrator-agent unavailable: {exc}', session_id=session_id, status_code=503, retryable=True)
     profile = session_store.get(session_id)
     if profile is None:
         error_envelope('VALIDATION_ERROR', 'session_id not found', session_id=session_id, status_code=404)
@@ -62,6 +116,12 @@ def get_profile(session_id: str):
 
 @router.patch('/sessions/{session_id}/profile', response_model=ApiEnvelope[ProfileSnapshot])
 def patch_profile(session_id: str, patch: ProfilePatchRequest):
+    if settings.use_remote_orchestrator:
+        try:
+            return envelope(ProfileSnapshot.model_validate(remote_orchestrator.patch_profile(session_id, patch.model_dump(exclude_none=True))), session_id=session_id)
+        except Exception as exc:
+            if not settings.allow_mock_fallback:
+                error_envelope('ORCHESTRATOR_UNAVAILABLE', f'orchestrator-agent unavailable: {exc}', session_id=session_id, status_code=503, retryable=True)
     try:
         profile = session_store.patch(session_id, patch)
     except KeyError:
@@ -73,6 +133,26 @@ def patch_profile(session_id: str, patch: ProfilePatchRequest):
 def chat(request: ChatRequest):
     if not request.message.strip():
         error_envelope('VALIDATION_ERROR', 'message is required', session_id=request.session_id)
+    # Per-session rate limit (Tech Framework §2.1 C). Fails open if Redis down.
+    if _rate_limit_cache is not None:
+        ok = _rate_limit_cache.rate_limit_token_bucket(
+            f"ratelimit:chat:{request.session_id}",
+            limit=settings.chat_rate_limit_per_minute,
+            window_seconds=60,
+        )
+        if not ok:
+            error_envelope(
+                'RATE_LIMITED',
+                f'too many /chat requests; max {settings.chat_rate_limit_per_minute}/min per session',
+                session_id=request.session_id, status_code=429, retryable=True,
+            )
+    if settings.use_remote_orchestrator:
+        try:
+            data = remote_orchestrator.chat(request.model_dump())
+            return envelope(ChatResponseData.model_validate(data), session_id=request.session_id)
+        except Exception as exc:
+            if not settings.allow_mock_fallback:
+                error_envelope('ORCHESTRATOR_UNAVAILABLE', f'orchestrator-agent unavailable: {exc}', session_id=request.session_id, status_code=503, retryable=True)
     try:
         data = orchestrator.handle_chat(request)
     except KeyError:
@@ -82,36 +162,71 @@ def chat(request: ChatRequest):
 
 @router.get('/areas/{area_id}/metrics', response_model=ApiEnvelope[AreaMetricsResponse])
 def area_metrics(area_id: str, session_id: str = Query(...)):
-    if session_store.get(session_id) is None:
-        error_envelope('VALIDATION_ERROR', 'session_id not found', session_id=session_id, status_code=404)
+    ensure_session_exists(session_id)
+    try:
+        return envelope(real_data.fetch_area_metrics(area_id), session_id=session_id)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            error_envelope('VALIDATION_ERROR', f'area_id not found: {area_id}', session_id=session_id, status_code=404)
+        if not settings.allow_mock_fallback:
+            error_envelope('DATA_SYNC_UNAVAILABLE', f'data-sync metrics endpoint failed: {exc}', session_id=session_id, status_code=503, retryable=True)
+    except Exception as exc:
+        if not settings.allow_mock_fallback:
+            error_envelope('DATA_SYNC_UNAVAILABLE', f'data-sync metrics endpoint unavailable: {exc}', session_id=session_id, status_code=503, retryable=True)
     return envelope(mock_data.area_metrics(area_id), session_id=session_id)
 
 
 @router.get('/areas/{area_id}/map-layers', response_model=ApiEnvelope[MapLayersResponse])
-def area_map_layers(area_id: str, session_id: str = Query(...)):
-    if session_store.get(session_id) is None:
-        error_envelope('VALIDATION_ERROR', 'session_id not found', session_id=session_id, status_code=404)
+def area_map_layers(
+    area_id: str,
+    session_id: str = Query(...),
+    layer_types: str = Query('choropleth,marker'),
+    metric_names: str = Query('crime_index,entertainment,convenience'),
+):
+    ensure_session_exists(session_id)
+    try:
+        with httpx.Client(timeout=2.0) as client:
+            response = client.get(
+                f"{settings.data_sync_base_url.rstrip('/')}/areas/{area_id}/map-layers",
+                params={'layer_types': layer_types, 'metric_names': metric_names},
+            )
+            response.raise_for_status()
+            data = MapLayersResponse.model_validate(response.json())
+            return envelope(data, session_id=session_id)
+    except Exception as exc:
+        if not settings.allow_mock_fallback:
+            error_envelope('DATA_SYNC_UNAVAILABLE', f'data-sync map layer endpoint unavailable: {exc}', session_id=session_id, status_code=503, retryable=True)
     return envelope(mock_data.map_layers(area_id), session_id=session_id)
 
 
 @router.get('/areas/{area_id}/weather', response_model=ApiEnvelope[WeatherResponse])
 def area_weather(area_id: str, session_id: str = Query(...), hours: int = Query(6, ge=1, le=24)):
-    if session_store.get(session_id) is None:
-        error_envelope('VALIDATION_ERROR', 'session_id not found', session_id=session_id, status_code=404)
+    ensure_session_exists(session_id)
+    try:
+        return envelope(real_data.fetch_area_weather(area_id, hours), session_id=session_id)
+    except Exception as exc:
+        if not settings.allow_mock_fallback:
+            error_envelope('MCP_WEATHER_UNAVAILABLE', f'mcp-weather unavailable: {exc}', session_id=session_id, status_code=503, retryable=True)
     return envelope(mock_data.weather(area_id, hours=hours), session_id=session_id)
 
 
 @router.post('/transit/realtime', response_model=ApiEnvelope[TransitRealtimeResponse])
 def realtime_transit(request: TransitRealtimeRequest):
-    if session_store.get(request.session_id) is None:
-        error_envelope('VALIDATION_ERROR', 'session_id not found', session_id=request.session_id, status_code=404)
+    ensure_session_exists(request.session_id)
+    try:
+        return envelope(
+            real_data.fetch_transit_realtime(request.session_id, request.origin, request.destination, request.mode),
+            session_id=request.session_id,
+        )
+    except Exception as exc:
+        if not settings.allow_mock_fallback:
+            error_envelope('MCP_TRANSIT_UNAVAILABLE', f'mcp-transit unavailable: {exc}', session_id=request.session_id, status_code=503, retryable=True)
     return envelope(mock_data.transit(request.origin, request.destination, request.mode), session_id=request.session_id)
 
 
 @router.get('/sessions/{session_id}/recommendations')
 def recommendations(session_id: str):
-    if session_store.get(session_id) is None:
-        error_envelope('VALIDATION_ERROR', 'session_id not found', session_id=session_id, status_code=404)
+    ensure_session_exists(session_id)
     return envelope({'recommendations': []}, session_id=session_id)
 
 
@@ -129,14 +244,29 @@ def debug_dependencies():
     try:
         with httpx.Client(timeout=2.0) as client:
             response = client.get(f"{settings.data_sync_base_url.rstrip('/')}/sync/freshness")
-            response.raise_for_status()
-            data_sync = {'status': 'ok', **response.json()}
+            if response.status_code == 404:
+                status_response = client.get(f"{settings.data_sync_base_url.rstrip('/')}/sync/status", params={'limit': 5})
+                status_response.raise_for_status()
+                data_sync = {'status': 'ok', 'freshness': [], 'freshness_available': False, 'recent': status_response.json().get('recent', [])}
+            else:
+                response.raise_for_status()
+                data_sync = {'status': 'ok', 'freshness_available': True, **response.json()}
     except Exception as exc:
         data_sync = {'status': 'unavailable', 'error': str(exc)}
 
+    orchestrator_status = {'status': 'disabled'}
+    if settings.use_remote_orchestrator:
+        try:
+            with httpx.Client(timeout=2.0) as client:
+                response = client.get(f"{settings.orchestrator_agent_url.rstrip('/')}/ready")
+                response.raise_for_status()
+                orchestrator_status = {'status': 'ok', **response.json()}
+        except Exception as exc:
+            orchestrator_status = {'status': 'unavailable', 'error': str(exc)}
+
     return envelope({'dependencies': {
-        'orchestrator-agent': 'in_process_mock',
-        'mcp-services': 'pending',
-        'postgres': 'not_used_by_gateway_mvp',
+        'orchestrator-agent': orchestrator_status,
+        'mcp-services': 'behind_orchestrator_agents',
+        'postgres': 'used_by_data_sync_and_mcp_services',
         'data-sync-service': data_sync,
     }})

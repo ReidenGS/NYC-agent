@@ -12,63 +12,159 @@
 - `profile-agent`
 
 实现方式：
-- Agent 协作使用 `python-a2a`
-- 每个 Agent 服务额外提供 FastAPI 管理接口，如 `/health`、`/agent/info`、`/debug/run`
+- Agent 协作使用 `python-a2a`，server 端用 `python_a2a.A2AServer`（Flask-native），client 端用 `python_a2a.A2AClient`
+- 每个 Agent 服务在同一个 Flask app 上额外挂载管理接口，如 `/health`、`/agent/info`、`/debug/run`
 - 普通问答同步返回
 - 耗时任务异步返回 `task_id`
 
-## 2. 统一 A2A Envelope
-MVP 采用统一 envelope，但 `payload` 允许各 Agent 自定义。
+## 2. python-a2a 三个核心类型
+
+A2A 协议在 python-a2a 实现里通过三个类承载：
+
+| 类型 | 用途 | 在本项目里 |
+|---|---|---|
+| `AgentCard` | Agent 身份与能力卡，外部通过 `/agent.json` 发现 agent | 6 个 agent 启动时各自构造一份，详见 §2.1 |
+| `Message` | 同步通信的标准载体，包含 `role + content` | 普通问答的请求/响应都用它，详见 §2.2 |
+| `Task` | 异步任务状态机，覆盖 submitted → working → completed/failed/canceled/input_required | 长耗时操作（推荐生成、批量对比）走它，详见 §2.3 |
+
+### 2.1 AgentCard 设计
+每个 agent 启动时实例化一份 `AgentCard`，传给 `A2AServer(agent_card=...)`，A2AServer 自动暴露 `GET /agent.json` 给外部发现：
+
+```python
+from python_a2a import AgentCard, AgentSkill, A2AServer
+
+card = AgentCard(
+    name="housing-agent",
+    description="纽约租房 / 房源 / 预算匹配",
+    url="http://housing-agent:8011",
+    version="1.0.0",
+    skills=[
+        AgentSkill(name="housing.rent_query",       description="查询某区域户型的租金区间"),
+        AgentSkill(name="housing.listing_search",   description="筛选符合预算和户型的真实房源"),
+    ],
+    capabilities={"streaming": False, "async_tasks": False},
+    default_input_modes=["text"],
+    default_output_modes=["text", "data"],
+)
+agent = HousingAgentServer(agent_card=card)
+```
+
+6 个 agent 的 AgentCard 由各自定义 `name / description / skills` 列表（与 §4 的 task_type 对齐）；`url` 用容器内部 hostname。
+
+### 2.2 Message.content 字段约定
+`Message` 类本身只有 `role + content + parent_message_id + conversation_id` 四个顶层字段。本项目的业务上下文统一塞进 `content` 这个 dict，字段约定如下：
 
 ```json
 {
-  "message_id": "msg_01H...",
-  "trace_id": "trace_01H...",
-  "session_id": "sess_01H...",
-  "source_agent": "orchestrator-agent",
-  "target_agent": "housing-agent",
-  "task_type": "housing.rent_query",
-  "intent": "get_rent_info",
-  "status": "pending",
-  "next_action": "call_agent",
-  "payload": {},
-  "slot_state": {
-    "required_slots": ["target_area"],
-    "filled_slots": {
-      "target_area": "Greenpoint"
+  "role": "user",
+  "content": {
+    "task_type": "housing.rent_query",
+    "intent": "get_rent_info",
+    "trace_id": "trace_01H...",
+    "session_id": "sess_01H...",
+    "source_agent": "orchestrator-agent",
+    "target_agent": "housing-agent",
+    "next_action": "call_agent",
+    "payload": { "...domain-specific..." },
+    "slot_state": {
+      "required_slots": ["target_area"],
+      "filled_slots": {"target_area": "Greenpoint"},
+      "missing_slots": [],
+      "slot_confidence": {"target_area": 0.91},
+      "follow_up_count": 0
     },
-    "missing_slots": [],
-    "slot_confidence": {
-      "target_area": 0.91
-    },
-    "follow_up_count": 0
-  },
-  "context": {
-    "user_text": "Greenpoint 房租大概多少？",
-    "domain_user_query": "Greenpoint 房租大概多少？",
-    "conversation_summary": "",
-    "weights": {
-      "safety": 0.3,
-      "commute": 0.3,
-      "rent": 0.2,
-      "convenience": 0.1,
-      "entertainment": 0.1
+    "context": {
+      "user_text": "Greenpoint 房租大概多少？",
+      "domain_user_query": "Greenpoint 房租大概多少？",
+      "conversation_summary": "",
+      "weights": {"safety": 0.3, "commute": 0.3, "rent": 0.2, "convenience": 0.1, "entertainment": 0.1}
     }
   },
-  "confidence": {
-    "intent": 0.9,
-    "overall": 0.86
-  },
-  "data_quality": {
-    "source": "rentcast_listings",
-    "freshness": "realtime",
-    "confidence": 0.82,
-    "timestamp": "2026-04-24T12:00:00-04:00"
-  },
-  "error": null,
-  "created_at": "2026-04-24T12:00:00-04:00"
+  "parent_message_id": null,
+  "conversation_id": "sess_01H..."
 }
 ```
+
+响应 Message：
+```json
+{
+  "role": "agent",
+  "content": {
+    "task_type": "housing.rent_query",
+    "status": "success",
+    "payload": { "rent_min": 2400, "rent_median": 2900, "rent_max": 3500, "...": "..." },
+    "confidence": {"intent": 0.9, "overall": 0.86},
+    "data_quality": {
+      "source": "rentcast_listings",
+      "freshness": "realtime",
+      "confidence": 0.82,
+      "timestamp": "2026-04-28T12:00:00-04:00"
+    },
+    "error": null
+  },
+  "parent_message_id": "<incoming msg id>",
+  "conversation_id": "sess_01H..."
+}
+```
+
+字段语义约定：
+- `task_type`：sub-agent 入口分发的依据，与 §4 列表对齐
+- `payload`：领域 agent 自由 schema，详见 `NYC_Agent_API_Schema_Contract.md`
+- `slot_state` / `context`：仅 Orchestrator → Domain Agent 方向使用；Domain Agent 不需要回填这些
+- `data_quality` / `confidence` / `error`：仅 Domain Agent → Orchestrator 方向回传
+
+`role` 必须是 `MessageRole.USER`（请求）或 `MessageRole.AGENT`（响应），由 python-a2a 枚举约束。
+
+#### Pass-through 原则
+**Orchestrator 不假设 Domain Agent `content` 内部字段结构**。Domain Agent 返回的整个 `Message.content` dict 直接序列化（JSON）后传给 Orchestrator 的 respond LLM，由 LLM 自己从 dict 里挑相关字段写答案。
+
+理由：
+- 不是所有 agent 响应都有 `payload`（例如 `clarification_required` 只有 `clarification` 文本）
+- `data_quality` / `confidence` / `error` / `status` 等顶层字段对 LLM 同样有用（BL §15 要求回答中带数据来源 + 时间窗口 + 不确定声明）
+- Orchestrator 只看 `status` 决定路由（success / clarification_required / failed），其它字段一律 pass-through，避免每个 agent 类型写一个特殊 extractor
+
+新加 agent 或 agent 在 `content` 里多放一个新字段时，orchestrator 不需要改代码——LLM 自然能看见。
+
+### 2.3 Task 状态机使用
+Task 用于**确实耗时**的工作（>5s 或会话需要结果但 client 不想阻塞）。MVP 阶段绝大部分查询走 Message 同步；Task 留接口给以下场景：
+- 完整推荐报告生成
+- 批量区域对比
+- 地图图层预计算
+- 较慢的数据聚合
+
+Task 状态机：
+```
+submitted ──> working ──> completed
+                ├──> failed
+                ├──> canceled
+                └──> input_required   (需要用户补充信息)
+```
+
+Client 端：
+```python
+from python_a2a import A2AClient
+
+client = A2AClient(endpoint_url="http://orchestrator-agent:8010")
+task = client.send_task_async({"task_type": "decision.full_recommendation", ...})
+# task.id 形如 "task_01H..."
+
+# 轮询
+result = client.get_task(task.id)
+while result.state == "working":
+    time.sleep(2)
+    result = client.get_task(task.id)
+```
+
+A2AServer 自动注册 `POST /tasks/send` 和 `GET /tasks/{id}`，无需手写。Server 端 override `handle_task(task)` 即可：
+```python
+class HousingAgentServer(A2AServer):
+    def handle_task(self, task):
+        # 长任务跑完后填 task.result，框架自动转 completed
+        task.result = compute_recommendation(task.input)
+        return task
+```
+
+MVP 先实现同步 Message，Task 只占接口、不深入实现细节。
 
 ## 3. Slot 校验与追问循环
 缺槽逻辑采用双层校验：
@@ -89,6 +185,11 @@ MVP 采用统一 envelope，但 `payload` 允许各 Agent 自定义。
 - 一般缺失信息最多连续追问 3 轮
 - 硬性必填槽位未补齐时，不进入业务执行
 - 超过 3 轮后，Agent 可以换问法或给用户示例
+
+`target_area` 规则：
+- `target_area` 是住房、区域画像、天气和推荐类 intent 的硬性必填。
+- 站点级或地址级实时交通 intent 不强制要求 `target_area`；例如用户明确给出站点、origin、destination 和 mode 时，可以直接执行 `transit.next_departure` / `transit.realtime_commute`。
+- 如果交通问题只说“从我的目标区域出发”但没有具体 origin，则可以使用会话中的 `target_area`；会话中也没有时再追问。
 
 ## 4. Intent 与 Required Slots
 MVP 先支持以下 intent：
@@ -134,7 +235,7 @@ MVP 先支持以下 intent：
 - `error`：不可恢复错误
 
 ## 6. 同步与异步
-同步任务：
+同步用 `Message`（详见 §2.2）：
 - 单点犯罪查询
 - 娱乐/便利分类查询
 - 租金概况
@@ -142,20 +243,13 @@ MVP 先支持以下 intent：
 - 实时下一班车
 - 当前/指定时刻天气查询
 
-异步任务：
+异步用 `Task`（详见 §2.3）：
 - 完整推荐
 - 批量区域对比
 - 地图图层预计算
 - 较慢的数据聚合
 
-异步任务返回：
-```json
-{
-  "task_id": "task_01H...",
-  "status": "running",
-  "poll_url": "/tasks/task_01H..."
-}
-```
+Task 创建后由 client 通过 `GET /tasks/{id}` 轮询；状态机 `submitted → working → completed/failed/canceled/input_required`。
 
 ## 7. 并发策略
 A2A 调用采用混合并发：
@@ -172,17 +266,21 @@ A2A 调用采用混合并发：
 - Orchestrator 合并结果后返回
 
 ## 8. 标准错误结构
-所有 Agent 错误统一返回：
+错误响应仍然包在 `Message`（同步）或 `Task.error`（异步）里。`Message.content` 顶层 `status` + `error` 字段约定如下：
 
 ```json
 {
-  "status": "failed",
-  "error": {
-    "code": "MISSING_REQUIRED_SLOT",
-    "message": "Missing target_area",
-    "retryable": true,
-    "fallback_available": false,
-    "details": {}
+  "role": "agent",
+  "content": {
+    "task_type": "housing.rent_query",
+    "status": "failed",
+    "error": {
+      "code": "MISSING_REQUIRED_SLOT",
+      "message": "Missing target_area",
+      "retryable": true,
+      "fallback_available": false,
+      "details": {}
+    }
   }
 }
 ```

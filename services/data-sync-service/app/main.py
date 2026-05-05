@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app import scheduler as scheduler_mod
-from app.api import routes_health, routes_sync
+from app.api import routes_health, routes_public, routes_sync
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,3 +32,4 @@ app = FastAPI(
 
 app.include_router(routes_health.router, tags=["health"])
 app.include_router(routes_sync.router, tags=["sync"])
+app.include_router(routes_public.router, tags=["public"])

@@ -117,6 +117,37 @@ AGGREGATE_SQL = text(
 )
 
 
+# crime_index_100 is declared in the schema (docs §6) and consumed by
+# downstream agents, but no source dataset provides it directly — the data
+# dictionary marks it as a derived field. We compute a min-max normalized
+# score across all NTAs for the same metric_date so the worst NTA = 100 and
+# an NTA with zero crimes = 0. Run *after* AGGREGATE_SQL has filled
+# crime_count_30d for the day.
+INDEX_REFRESH_SQL = text(
+    """
+    WITH bounds AS (
+        SELECT NULLIF(MAX(crime_count_30d), 0)::numeric AS max_count
+        FROM app_area_metrics_daily
+        WHERE metric_date = CURRENT_DATE
+    )
+    UPDATE app_area_metrics_daily m
+       SET crime_index_100 = ROUND(
+               LEAST(100.0,
+                     COALESCE(m.crime_count_30d, 0)::numeric * 100.0
+                     / COALESCE(bounds.max_count, 1)),
+               2),
+           source_snapshot = m.source_snapshot
+               || jsonb_build_object('crime_index_100',
+                      jsonb_build_object('source', 'derived_min_max',
+                                         'window_end', CURRENT_DATE,
+                                         'basis', 'crime_count_30d')),
+           updated_at = NOW()
+      FROM bounds
+     WHERE m.metric_date = CURRENT_DATE
+    """
+)
+
+
 def _parse_occurred(row: dict[str, Any]) -> tuple[datetime | None, date | None, int | None]:
     raw_dt = row.get("cmplnt_fr_dt")  # ISO like 2023-05-12T00:00:00.000
     raw_tm = row.get("cmplnt_fr_tm")  # "HH:MM:SS"
@@ -233,6 +264,7 @@ def run(trigger_type: str = "manual") -> JobResult:
         # Aggregation runs in its own transaction.
         with db_session() as session:
             agg_rows = session.execute(AGGREGATE_SQL).scalar() or 0
+            session.execute(INDEX_REFRESH_SQL)
 
         ctx.rows_fetched = seen
         ctx.rows_written = written

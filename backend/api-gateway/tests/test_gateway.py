@@ -1,5 +1,9 @@
 from fastapi.testclient import TestClient
 from app.main import app
+from app.core.config import settings
+
+settings.use_remote_orchestrator = False
+settings.allow_mock_fallback = True
 
 client = TestClient(app)
 

@@ -77,9 +77,9 @@ Agent 不做：
 
 ## 9. 端到端业务流程（问答驱动）
 1. 用户自然语言提问或描述需求（可非常不完整）
-2. Agent 先识别是否具备唯一硬性必填：`target_area`（目标地区）
-3. 若缺少 `target_area`，Agent 先追问该字段，不进入分析
-4. 有 `target_area` 后，按用户当前问题即时回答：
+2. Agent 先识别当前 intent 是否需要 `target_area`（目标地区）
+3. 若当前 intent 需要 `target_area` 但缺少该字段，Agent 先追问该字段，不进入对应区域分析
+4. 槽位满足当前 intent 后，按用户当前问题即时回答：
    - 问犯罪：返回该区域附近犯罪率/犯罪数量（含时间范围）
    - 问娱乐：返回附近娱乐设施数量/密度
    - 问交通：返回通勤可达性与时间分布
@@ -91,8 +91,9 @@ Agent 不做：
 8. 用户可继续追问，Agent 持续增量重算，直到收敛到 1-2 个候选区域
 
 ## 10. 必填信息与权重管理规则
-### 唯一硬性必填（MVP）
-- `target_area`（目标地区）
+### 区域类硬性必填（MVP）
+- `target_area`（目标地区）：住房、区域画像、天气和推荐类 intent 必填
+- 例外：站点级或地址级实时交通查询可不要求 `target_area`，只要 `origin/station`、`destination`、`mode` 等交通槽位已齐全
 
 ### 建议补充信息（非硬性）
 - `budget_monthly`
@@ -117,30 +118,41 @@ Agent 不做：
 
 ## 11. A2A 多 Agent 角色设计
 ### Orchestrator Agent（编排 Agent）
-- 管理会话状态（已知字段、缺失字段、权重、历史问答）
-- 决定“直接答复”还是“追问补齐”
-- 合并子 Agent 结果并输出最终答案
+- 用 LangGraph 跑 ReAct 6 节点 state machine（详见 §13.1）
+- 持有「会话工作副本」：已知字段、缺失字段、权重、对话历史 全部在 LangGraph state 里，由 PostgresSaver 自动 checkpoint，session_id 即 thread_id
+- 决定"直接答复"还是"追问补齐"
+- 编排 A2A 调用（单 agent / 多 agent 并行）并合并结果
+- 在 A2A payload 中向 downstream agent 塞齐 slots（agent 自身不查 mcp-profile）
+- 在 session 初始化、显式 profile 更新、每轮短 summary 更新和生成推荐时，按 schema-driven 规则触发 profile-agent / mcp-profile 持久化（详见 §13.2）
 
 ### Neighborhood Agent（区域画像 Agent）
 - 构建区域画像（安全、便利、娱乐）
 - 对安全/便利/娱乐类问题做领域内查询规划
+- **无状态**：完全信任 orchestrator A2A payload 里的 slots，不读 mcp-profile
 
 ### Transit Agent（通勤 Agent）
 - 计算通勤可达性与稳定性
+- **无状态**：同上
 
 ### Weather Agent（天气 Agent）
 - 处理目标区域当前天气、小时级天气预报和指定时刻天气问题
 - 不参与住房推荐打分，只作为生活辅助信息展示
+- **无状态**：同上
 
 ### Housing Agent（租房 Agent）
 - 分析租金区间与房源可得性
+- **无状态**：同上
 
 ### Profile Agent（会话画像 Agent）
-- 管理 session、槽位、权重、偏好和短对话摘要
+- 定位为「持久化 profile 快照服务」
+- 写入触发条件：(1) session 创建；(2) 用户显式修改 profile/权重/偏好；(3) Orchestrator 每轮生成短 `conversation_summary`；(4) Orchestrator 生成推荐时保存推荐快照
+- 读取场景：前端 `/sessions/{id}/profile` 状态面板、显式 profile patch 后刷新、`/sessions/{id}/recommendations` 端点；Domain Agent 一律不读
+- messages 历史由 Orchestrator 的 LangGraph checkpointer 自动管理；`conversation_summary` 每轮维护一份短摘要，供前端状态面板和后续推荐使用
 
-### Decision Agent（决策 Agent）
-- 使用当前权重做多维打分
-- 生成可解释推荐理由
+### 推荐/决策逻辑（MVP）
+- MVP 不单独实现 `Decision Agent`
+- Orchestrator 在 Node 6 触发"生成推荐"分支时，使用当前权重做多维打分并生成可解释推荐理由
+- 后续如果推荐逻辑复杂化，再拆分为独立 `decision-agent`
 
 ## 12. MCP 工具层设计
 规划 MCP 工具如下：
@@ -185,6 +197,73 @@ Agent 不做：
 冲突处理：
 - 检测到冲突值（例如两个不同预算）时先澄清再更新
 - 重要更新必须回显（尤其是权重）
+
+### 13.1 Orchestrator ReAct 6 节点编排
+
+Orchestrator 使用 LangGraph 实现 ReAct 风格的 6 节点 state machine（详见 `docs/NYC_Agent_Backend_Tech_Framework.md` §2）。每次 `/chat` 进来：
+
+```
+[Pre]  LangGraph 自动从 PostgresSaver checkpointer 恢复上次 state（含 messages、target_area、pending_follow_up）
+       —— 此步不调 mcp-profile.get_snapshot
+
+Node 1 backfill (规则)
+  - 若 state.pending_follow_up 非空且当前消息看起来在回答它，回填对应槽位、清空 pending
+  - 否则保留 pending（用户岔开话题）
+
+Node 2 understand (LLM, PydanticOutputParser)
+  - 输出: { intent, areas[], constraints, persistable_field_updates, confidence }
+  - persistable_field_updates 字段直接对应 mcp-profile schema（见 §13.2）
+
+Node 2.5 persist (条件触发)
+  - if persistable_field_updates 非空 → 调 mcp-profile.patch_slots
+  - else → skip
+  - 不阻塞 graph 继续推进
+
+Node 3 gate (规则)
+  - 检查当前 intent 必填槽位是否齐全
+  - 缺 → 路由到 Node 6 ask_follow_up 分支，并设置 state.pending_follow_up
+  - 齐 → 继续 Node 4
+
+Node 4 plan_and_execute (代码 + A2A)
+  - 单维问题选 1 个 domain agent；跨区比较选多个并行
+  - orchestrator 在 A2A payload 里塞齐 slots（target_area / budget / weights / 等）
+  - downstream agent 不读 mcp-profile，纯无状态（详见 Tech Framework §2.2）
+
+Node 5 observe (规则)
+  - 收集 plan_execute 阶段所有 Domain Agent 的 Message 响应
+  - 只看 content.status 决定路由（success / clarification_required / no_data / dependency_failed / unsupported_data_request），不解析 content 内部业务字段
+  - 把每个 agent 的整个 Message.content dict 原样存入 state.agent_results
+
+Node 6 respond (LLM, PydanticOutputParser)
+  - 输入 prompt 包含：用户当前消息 + state.agent_results 整个 list（每个元素是 agent 返回的完整 content dict）+ §15 输出规范
+  - LLM 自己从 content dict 里挑 status / payload / data_quality / confidence / error 等相关字段写中文回答（pass-through 原则，详见 A2A_Protocol §2.2）
+  - 输出符合 ChatResponseData 模型的最终回答（message_type / answer / next_action / sources / data_quality）
+  - 强制按 §15 用户侧输出规范包含数据来源 + 时间窗口 + 必要 disclaimer
+  - 每轮生成短 `conversation_summary`，通过 profile-agent / mcp-profile 保存
+  - 若 next_action 涉及"生成推荐 / 收敛候选区域" → 同步调 mcp-profile.snapshot_save 备份推荐快照
+
+[Post] LangGraph 自动 checkpoint state；除短 summary / 显式 profile 更新 / 推荐快照外，不额外调 mcp-profile
+```
+
+**LLM 调用次数**：每轮最多 2 次（Node 2 + Node 6）；其余节点用规则，0 LLM 调用。
+
+### 13.2 持久化触发规则（schema-driven）
+
+Node 2 的 LLM 输出 `persistable_field_updates` 字段，结构对照 `app_session_profile` 列：
+
+| Profile 字段 | 触发示例 | LLM 抽出 |
+|---|---|---|
+| `target_area_id` | "Astoria 怎么样" | `{"target_area_id": "QN0101"}` |
+| `budget` | "我预算 2500" / "最多 3500" | `{"budget": {"max": 2500}}` |
+| `target_destination` | "我在 NYU 上学" | `{"target_destination": "NYU"}` |
+| `max_commute_minutes` | "通勤不要超过 40 分钟" | `{"max_commute_minutes": 40}` |
+| `preferences` | "我有狗" / "需要安静" | `{"preferences": ["pet-friendly", "quiet"]}` |
+| `weights` | "我更在意安全" | `{"weights": {"safety": 0.5, ...}}`（归一化后） |
+| `conversation_summary` | (Node 6 每轮自动维护短摘要) | `{"conversation_summary": "..."}` |
+
+新增列后只需在 Node 2 prompt 模板里加映射即可，**逻辑跟 schema 一一对应，不硬编码**。
+
+普通对话（"那娱乐呢？" / "Astoria 安全吗？"）会更新 LangGraph state，并写入一份短 `conversation_summary`；除 summary 外，不写其它 profile 字段，除非用户显式表达可持久化偏好。
 
 ## 14. 前端交互与可视化状态要求
 前端必须提供“信息与权重状态面板”，用于让用户一目了然确认 Agent 理解是否正确。
@@ -282,13 +361,19 @@ MVP 需证明：
 - A2A + MCP 数据接地能力可执行
 - 质量/时延/成本可量化
 
-## 20. 加分功能（可选）：地图可视化决策层
-该功能为加分项，不作为 MVP 上线阻塞条件。若时间不足可暂不实现。
+## 20. 地图可视化决策层
+MVP 必须提供基础 MapLibre 地图容器、目标区域聚焦/高亮能力、地图图层加载 fallback；高级热力、marker 聚类、多图层联动和综合推荐地图属于加分项，不作为 MVP 上线阻塞条件。
 
 ### 20.1 目标
 在文本数据之外，用地图可视化展示目标区域及周边指标分布，帮助用户更直观理解“哪里更安全、哪里娱乐设施更多、哪里通勤更方便”。
 
 ### 20.2 核心展示能力
+MVP 基础能力：
+1. 真实 MapLibre 地图容器
+2. 目标区域聚焦或高亮
+3. 图层加载失败时不阻塞聊天和指标卡片
+
+加分能力：
 1. 区域着色（Choropleth/Heatmap）：
    - 犯罪率高：区域颜色向红色过渡
    - 犯罪率低：区域颜色向绿色或浅色过渡
@@ -326,7 +411,7 @@ MVP 需证明：
    - 高分区域颜色更突出
 
 ### 20.5 前端实现建议（可选技术）
-- 地图库：Mapbox GL JS 或 Leaflet
+- 地图库：MapLibre GL JS + MapTiler；无 MapTiler key 时保留 MapLibre fallback
 - 热力层：Heatmap/Fill Layer
 - 点位层：Circle/Marker + Cluster
 - 交互：图层开关、图例、悬浮信息卡片

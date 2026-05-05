@@ -23,6 +23,7 @@ export type ProfileSnapshot = {
   target_area: TargetArea | null;
   target_area_id?: string | null;
   budget?: Budget | null;
+  bedroom_type?: string | null;
   target_destination?: string | null;
   max_commute_minutes?: number | null;
   preferences?: string[];

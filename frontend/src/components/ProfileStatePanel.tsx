@@ -32,8 +32,12 @@ export function ProfileStatePanel({ profile, isExpanded, onToggle }: Props) {
             </strong>
           </div>
           <div>
-            <span className="label">目的地</span>
-            <strong>{profile?.target_destination ?? '未提供'}</strong>
+            <span className="label">户型</span>
+            <strong>{profile?.bedroom_type ?? '未提供'}</strong>
+          </div>
+          <div>
+            <span className="label">偏好区域</span>
+            <strong>{targetArea?.area_name ?? '未提供'}</strong>
           </div>
           <div>
             <span className="label">最长通勤</span>

@@ -10,6 +10,15 @@ type Props = {
   areas: AreaOption[];
   layers: MapLayer[];
   activeAreaId: string | null;
+  activeAreaCenter?: { latitude: number; longitude: number } | null;
+  points: Array<{
+    id: string;
+    kind: string;
+    label: string;
+    subtitle?: string | null;
+    latitude: number;
+    longitude: number;
+  }>;
 };
 
 const fallbackStyle = 'https://demotiles.maplibre.org/style.json';
@@ -57,9 +66,10 @@ function addBusinessLayer(map: MapLibreMap, layer: MapLayer) {
   });
 }
 
-export function MapPanel({ areas, layers, activeAreaId }: Props) {
+export function MapPanel({ areas, layers, activeAreaId, activeAreaCenter, points }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
+  const markerRef = useRef<maplibregl.Marker[]>([]);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [error, setError] = useState<string>('');
 
@@ -131,16 +141,47 @@ export function MapPanel({ areas, layers, activeAreaId }: Props) {
   useEffect(() => {
     const map = mapRef.current;
     if (!map || status !== 'ready') return;
+
+    markerRef.current.forEach((marker) => marker.remove());
+    markerRef.current = [];
+
+    const nextMarkers: maplibregl.Marker[] = [];
+    points.forEach((point) => {
+      const el = document.createElement('div');
+      el.className = point.kind === 'target_area' ? 'map-point map-point--target' : 'map-point map-point--listing';
+      el.title = point.subtitle ? `${point.label} · ${point.subtitle}` : point.label;
+
+      const popupHtml = point.subtitle
+        ? `<strong>${point.label}</strong><div>${point.subtitle}</div>`
+        : `<strong>${point.label}</strong>`;
+      const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false }).setHTML(popupHtml);
+
+      const marker = new maplibregl.Marker({ element: el })
+        .setLngLat([point.longitude, point.latitude])
+        .setPopup(popup)
+        .addTo(map);
+      nextMarkers.push(marker);
+    });
+    markerRef.current = nextMarkers;
+  }, [points, status]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || status !== 'ready') return;
     const activeArea = areas.find((area) => area.area_id === activeAreaId);
-    if (!activeArea?.latitude || !activeArea.longitude) return;
+    const targetPoint = points.find((point) => point.kind === 'target_area');
+
+    const latitude = activeArea?.latitude ?? activeAreaCenter?.latitude ?? targetPoint?.latitude;
+    const longitude = activeArea?.longitude ?? activeAreaCenter?.longitude ?? targetPoint?.longitude;
+    if (latitude == null || longitude == null) return;
 
     map.flyTo({
-      center: [activeArea.longitude, activeArea.latitude],
+      center: [longitude, latitude],
       zoom: 12.8,
       speed: 0.8,
       essential: true
     });
-  }, [activeAreaId, areas, status]);
+  }, [activeAreaId, activeAreaCenter, areas, points, status]);
 
   return (
     <section className="map-panel">

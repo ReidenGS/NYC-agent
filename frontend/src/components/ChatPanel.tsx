@@ -39,12 +39,15 @@ export function ChatPanel({ messages, isLoading, onSend }: Props) {
         className="chat-panel__form"
         onSubmit={(event) => {
           event.preventDefault();
-          if (!draft.trim()) return;
-          onSend(draft.trim());
+          const form = event.currentTarget;
+          const input = form.elements.namedItem('message') as HTMLInputElement | null;
+          const message = (input?.value ?? draft).trim();
+          if (!message) return;
+          onSend(message);
           setDraft('');
         }}
       >
-        <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="询问区域详情、天气或通勤..." />
+        <input name="message" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="询问区域详情、天气或通勤..." />
         <button type="submit" aria-label="Send message"><ChevronRight size={20} /></button>
       </form>
     </aside>

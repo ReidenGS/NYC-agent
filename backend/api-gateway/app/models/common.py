@@ -75,3 +75,4 @@ class WeatherCardData(BaseModel):
 class DisplayRefs(BaseModel):
     map_layer_ids: list[str] = Field(default_factory=list)
     display_result_ids: list[str] = Field(default_factory=list)
+    map_points: list[dict] = Field(default_factory=list)

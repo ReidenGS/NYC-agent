@@ -118,6 +118,22 @@ input {
   color: rgba(255, 255, 255, 0.55);
 }
 
+.map-point {
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 999px;
+  border: 2px solid #ffffff;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.35);
+}
+
+.map-point--target {
+  background: #ef4444;
+}
+
+.map-point--listing {
+  background: #2563eb;
+}
+
 .floating-brand {
   top: 1.5rem;
   left: 2rem;

@@ -235,6 +235,11 @@ def run(trigger_type: str = "manual") -> JobResult:
                     rows_written += rc
             session.commit()
 
+        # Derive rent_index_value on app_area_metrics_daily (see _rent_refresh).
+        with db_session() as session:
+            from app.jobs._rent_refresh import refresh_rent_index
+            refresh_rent_index(session)
+
         ctx.rows_fetched = seen
         ctx.rows_written = rows_written
         ctx.metadata = {

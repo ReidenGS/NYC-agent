@@ -172,6 +172,11 @@ def run(trigger_type: str = "manual") -> JobResult:
                     ).rowcount or 0
                     rows_written += rc
 
+        # Derive rent_index_value on app_area_metrics_daily (see _rent_refresh).
+        with db_session() as session:
+            from app.jobs._rent_refresh import refresh_rent_index
+            refresh_rent_index(session)
+
         ctx.api_calls_used = api_calls
         ctx.rows_written = rows_written
         ctx.rows_fetched = api_calls  # one payload per call

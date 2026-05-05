@@ -26,6 +26,7 @@ class ProfileSnapshot(BaseModel):
     target_area: TargetArea | None = None
     target_area_id: str | None = None
     budget: Budget | None = None
+    bedroom_type: str | None = None
     target_destination: str | None = None
     max_commute_minutes: int | None = None
     preferences: list[str] = Field(default_factory=list)
@@ -48,6 +49,7 @@ class SessionCreateResponse(BaseModel):
 class ProfilePatchRequest(BaseModel):
     target_area_id: str | None = None
     budget: Budget | None = None
+    bedroom_type: str | None = None
     target_destination: str | None = None
     max_commute_minutes: int | None = None
     weights: DecisionWeights | None = None

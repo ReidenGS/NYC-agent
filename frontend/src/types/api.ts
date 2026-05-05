@@ -74,4 +74,12 @@ export type WeatherCardData = {
 export type DisplayRefs = {
   map_layer_ids: string[];
   display_result_ids: string[];
+  map_points?: Array<{
+    id: string;
+    kind: 'target_area' | 'listing' | string;
+    label: string;
+    subtitle?: string | null;
+    latitude: number;
+    longitude: number;
+  }>;
 };

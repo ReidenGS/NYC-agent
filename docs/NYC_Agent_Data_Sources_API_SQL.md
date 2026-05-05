@@ -650,7 +650,7 @@ CREATE TABLE IF NOT EXISTS app_transit_query_log (
 -- 作用：保存用户当前会话的约束、权重和槽位状态，保证多轮对话一致。
 CREATE TABLE IF NOT EXISTS app_session_profile (
   session_id TEXT PRIMARY KEY,                                      -- 会话唯一ID（前后端用于关联同一轮咨询）
-  target_area_id TEXT NULL REFERENCES app_area_dimension(area_id),  -- 目标地区ID（唯一硬性必填）
+  target_area_id TEXT NULL REFERENCES app_area_dimension(area_id),  -- 目标地区ID（区域/住房/天气/推荐类 intent 必填）
   budget_min NUMERIC(10,2) NULL,                                    -- 预算下限（美元/月）
   budget_max NUMERIC(10,2) NULL,                                    -- 预算上限（美元/月）
   target_destination TEXT NULL,                                     -- 通勤目的地（学校/公司/地标）

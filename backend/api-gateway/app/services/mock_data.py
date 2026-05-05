@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from app.models.area import AreaMetrics, AreaMetricsResponse, AreaSummary, GeoJsonFeature, GeoJsonFeatureCollection, GeoJsonGeometry, MapLayer, MapLayersResponse
 from app.models.common import MetricCard, MetricItem, SourceItem, WeatherPeriod
 from app.models.transit import TransitDeparture, TransitRealtimeResponse
 from app.models.weather import WeatherPayload, WeatherResponse
 
-NY_TZ = timezone(timedelta(hours=-4))
+# Use IANA zone so the offset honors EST/EDT automatically. The previous
+# hard-coded -04:00 was wrong half the year (Nov–Mar = EST = -05:00).
+NY_TZ = ZoneInfo("America/New_York")
 
 AREAS: dict[str, AreaSummary] = {
     'QN0101': AreaSummary(area_id='QN0101', area_name='Astoria', borough='Queens', latitude=40.7686, longitude=-73.9196),

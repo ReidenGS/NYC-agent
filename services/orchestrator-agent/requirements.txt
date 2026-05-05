@@ -1,0 +1,19 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+flask==3.1.0
+httpx==0.28.1
+pydantic==2.10.3
+pydantic-settings==2.6.1
+
+# LangGraph + LangChain (per docs/NYC_Agent_Backend_Tech_Framework.md §2)
+langgraph==0.2.74
+langchain-core==0.3.29
+langchain-openai==0.2.14
+langgraph-checkpoint-postgres==2.0.13
+psycopg[binary,pool]==3.2.3
+
+# A2A protocol. Orchestrator uses A2AClient + Message for downstream agent calls.
+python-a2a==0.5.10
+
+# Observability
+langsmith==0.2.10
