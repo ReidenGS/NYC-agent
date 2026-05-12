@@ -58,7 +58,7 @@ def _build_neighborhood_payload(state: OrchestratorState) -> dict:
     return {
         "domain_user_query": state.current_user_message,
         "slots": _area_slots(state),
-        "domain_context": {"window_days": 30, "point_limit": 20, "map_layer_requests": []},
+        "domain_context": {"point_limit": 20, "map_layer_requests": []},
     }
 
 
@@ -278,7 +278,7 @@ def _build_comparison_payload(state: OrchestratorState, area_id: str, area_name:
             "area_name": {"value": area_name or area_id, "source": "user_explicit", "confidence": 0.9},
         },
         "domain_context": (
-            {"window_days": 30, "point_limit": 20, "map_layer_requests": []}
+            {"point_limit": 20, "map_layer_requests": []}
             if task_type.startswith("neighborhood.") or task_type == "area.metrics_query"
             else {"hours": 6} if task_type.startswith("weather.")
             else {"currency": "USD", "listing_limit": 5}

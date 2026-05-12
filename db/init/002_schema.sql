@@ -367,25 +367,85 @@ CREATE INDEX IF NOT EXISTS idx_data_sync_job_name_started
   ON app_data_sync_job_log (job_name, started_at DESC);
 
 -- 区域指标最新视图：默认查询入口。前端和 Domain Agent 应该查这个视图，
--- 不要直接查 app_area_metrics_daily。视图返回每个 area 最新一行
--- （metric_date DESC），所有指标已通过 ON CONFLICT 合并到同一行。
--- 当 source_snapshot.<metric>.window_end 早于 metric_date 时，回答用户必须
--- 显式说明该指标的真实窗口（例如 “犯罪数据更新到 2024-12-31”）。
+-- 不要直接查 app_area_metrics_daily。
+-- 视图按“指标”分别取最近一次真实写入的数据，而不是取最新日期的整行。
+-- 这样低频更新的 NYPD crime / rent 等指标不会被当天只刷新 311 或 POI
+-- 的行用默认 0 覆盖。每个指标的真实数据窗口仍从 source_snapshot 读取。
 CREATE OR REPLACE VIEW v_area_metrics_latest AS
-SELECT DISTINCT ON (m.area_id)
-  m.area_id,
-  m.metric_date,
-  m.crime_count_30d,
-  m.crime_index_100,
-  m.entertainment_poi_count,
-  m.convenience_facility_count,
-  m.transit_station_count,
-  m.complaint_noise_30d,
-  m.rent_index_value,
-  m.source_snapshot,
-  m.updated_at
-FROM app_area_metrics_daily m
-ORDER BY m.area_id, m.metric_date DESC;
+SELECT
+  a.area_id,
+  latest.metric_date,
+  COALESCE(crime.crime_count_30d, 0) AS crime_count_30d,
+  crime.crime_index_100,
+  COALESCE(entertainment.entertainment_poi_count, 0) AS entertainment_poi_count,
+  COALESCE(convenience.convenience_facility_count, 0) AS convenience_facility_count,
+  COALESCE(transit.transit_station_count, 0) AS transit_station_count,
+  COALESCE(noise.complaint_noise_30d, 0) AS complaint_noise_30d,
+  rent.rent_index_value,
+  COALESCE(crime.source_snapshot, '{}'::jsonb)
+    || COALESCE(entertainment.source_snapshot, '{}'::jsonb)
+    || COALESCE(convenience.source_snapshot, '{}'::jsonb)
+    || COALESCE(transit.source_snapshot, '{}'::jsonb)
+    || COALESCE(noise.source_snapshot, '{}'::jsonb)
+    || COALESCE(rent.source_snapshot, '{}'::jsonb) AS source_snapshot,
+  latest.updated_at
+FROM app_area_dimension a
+LEFT JOIN LATERAL (
+  SELECT metric_date, updated_at
+  FROM app_area_metrics_daily m
+  WHERE m.area_id = a.area_id
+  ORDER BY metric_date DESC, updated_at DESC
+  LIMIT 1
+) latest ON TRUE
+LEFT JOIN LATERAL (
+  SELECT crime_count_30d, crime_index_100, source_snapshot
+  FROM app_area_metrics_daily m
+  WHERE m.area_id = a.area_id
+    AND m.source_snapshot ? 'crime_count_30d'
+  ORDER BY metric_date DESC, updated_at DESC
+  LIMIT 1
+) crime ON TRUE
+LEFT JOIN LATERAL (
+  SELECT entertainment_poi_count, source_snapshot
+  FROM app_area_metrics_daily m
+  WHERE m.area_id = a.area_id
+    AND m.source_snapshot ? 'entertainment_poi_count'
+  ORDER BY metric_date DESC, updated_at DESC
+  LIMIT 1
+) entertainment ON TRUE
+LEFT JOIN LATERAL (
+  SELECT convenience_facility_count, source_snapshot
+  FROM app_area_metrics_daily m
+  WHERE m.area_id = a.area_id
+    AND m.source_snapshot ? 'convenience_facility_count'
+  ORDER BY metric_date DESC, updated_at DESC
+  LIMIT 1
+) convenience ON TRUE
+LEFT JOIN LATERAL (
+  SELECT transit_station_count, source_snapshot
+  FROM app_area_metrics_daily m
+  WHERE m.area_id = a.area_id
+    AND m.source_snapshot ? 'transit_station_count'
+  ORDER BY metric_date DESC, updated_at DESC
+  LIMIT 1
+) transit ON TRUE
+LEFT JOIN LATERAL (
+  SELECT complaint_noise_30d, source_snapshot
+  FROM app_area_metrics_daily m
+  WHERE m.area_id = a.area_id
+    AND m.source_snapshot ? 'complaint_noise_30d'
+  ORDER BY metric_date DESC, updated_at DESC
+  LIMIT 1
+) noise ON TRUE
+LEFT JOIN LATERAL (
+  SELECT rent_index_value, source_snapshot
+  FROM app_area_metrics_daily m
+  WHERE m.area_id = a.area_id
+    AND m.source_snapshot ? 'rent_index_value'
+  ORDER BY metric_date DESC, updated_at DESC
+  LIMIT 1
+) rent ON TRUE
+WHERE latest.metric_date IS NOT NULL;
 -- 数据同步新鲜度视图：供 /sync/freshness、Gateway /debug/dependencies
 -- 和后续管理面板判断每个同步任务最近是否成功、是否过期。
 CREATE OR REPLACE VIEW v_sync_freshness AS

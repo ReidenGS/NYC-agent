@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     weather_agent_url: str = "http://localhost:8015"
     profile_agent_url: str = "http://localhost:8014"
     data_sync_base_url: str = "http://data-sync-service:8030"
-    request_timeout_seconds: float = 6.0
+    request_timeout_seconds: float = 30.0
 
     # LangSmith — silently no-op when LANGCHAIN_API_KEY missing
     langchain_tracing_v2: bool = False

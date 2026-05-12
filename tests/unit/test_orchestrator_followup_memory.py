@@ -52,9 +52,15 @@ def test_gate_writes_complete_pending_followup():
 
 
 def test_backfill_preserves_pending_followup():
+    from app.nodes import backfill as backfill_mod
     from app.nodes.backfill import backfill
     from app.state import OrchestratorState, PendingFollowUp
 
+    def fake_call_agent(*_args, **_kwargs):
+        raise AssertionError("profile should not be called without session_id")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(backfill_mod, "call_agent", fake_call_agent)
     pending = PendingFollowUp(
         asked_slot="target_area",
         asked_intent="housing.rent_query",
@@ -65,6 +71,70 @@ def test_backfill_preserves_pending_followup():
     state = OrchestratorState(current_user_message="Astoria", pending_follow_up=pending)
 
     assert backfill(state) == {}
+    monkeypatch.undo()
+
+
+def test_backfill_loads_target_area_from_profile(monkeypatch):
+    from app.nodes import backfill as backfill_mod
+    from app.nodes.backfill import backfill
+    from app.state import OrchestratorState
+
+    monkeypatch.setattr(
+        backfill_mod,
+        "call_agent",
+        lambda *_args, **_kwargs: {
+            "status": "success",
+            "payload": {
+                "profile_snapshot": {
+                    "target_area_id": "MN0101",
+                    "target_area": {
+                        "area_id": "MN0101",
+                        "area_name": "Financial District-Battery Park City",
+                    },
+                }
+            },
+        },
+    )
+
+    update = backfill(OrchestratorState(session_id="sess_1"))
+
+    assert update == {
+        "target_area_id": "MN0101",
+        "target_area_name": "Financial District-Battery Park City",
+    }
+
+
+def test_backfill_does_not_override_graph_target_area(monkeypatch):
+    from app.nodes import backfill as backfill_mod
+    from app.nodes.backfill import backfill
+    from app.state import OrchestratorState
+
+    monkeypatch.setattr(
+        backfill_mod,
+        "call_agent",
+        lambda *_args, **_kwargs: {
+            "status": "success",
+            "payload": {
+                "profile_snapshot": {
+                    "target_area_id": "MN0101",
+                    "target_area": {
+                        "area_id": "MN0101",
+                        "area_name": "Financial District-Battery Park City",
+                    },
+                }
+            },
+        },
+    )
+
+    update = backfill(
+        OrchestratorState(
+            session_id="sess_1",
+            target_area_id="QN0101",
+            target_area_name="Astoria",
+        )
+    )
+
+    assert update == {}
 
 
 def test_understand_uses_pending_to_fill_missing_area(monkeypatch):
@@ -107,6 +177,52 @@ def test_understand_uses_pending_to_fill_missing_area(monkeypatch):
     assert update["target_area_id"] == "QN0101"
     assert update["target_area_name"] == "Astoria"
     assert update["pending_follow_up"] is None
+
+
+def test_understand_rag_resolves_leading_area_phrase_when_llm_misses_area(monkeypatch):
+    from app.nodes import understand as understand_mod
+    from app.nodes.understand import understand
+    from app.state import OrchestratorState
+
+    class FakeResolver:
+        def resolve(self, query_text):
+            assert query_text == "Financial District-Battery Park City"
+            return type(
+                "Result",
+                (),
+                {
+                    "resolved": True,
+                    "area_id": "MN0101",
+                    "area_name": "Financial District-Battery Park City",
+                    "score": 1.0,
+                    "candidates": [],
+                },
+            )()
+
+    monkeypatch.setattr(understand_mod.settings, "openai_api_key", "test-key")
+    monkeypatch.setattr(understand_mod, "get_area_resolver", lambda: FakeResolver())
+    monkeypatch.setattr(
+        understand_mod,
+        "_build_llm",
+        lambda: _fake_llm_with_json(
+            {
+                "intent": "neighborhood.convenience_query",
+                "detected_areas": [],
+                "constraints": {},
+                "persistable_field_updates": {},
+                "confidence": 0.8,
+            }
+        ),
+    )
+
+    update = understand(
+        OrchestratorState(
+            current_user_message="Financial District-Battery Park City 有什么便利设施"
+        )
+    )
+
+    assert update["target_area_id"] == "MN0101"
+    assert update["target_area_name"] == "Financial District-Battery Park City"
 
 
 def test_understand_ambiguous_area_answer_reuses_pending_intent(monkeypatch):

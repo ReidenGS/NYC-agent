@@ -225,6 +225,35 @@ def _area_query_for_rag(value: str | None) -> str | None:
     return text or None
 
 
+def _area_candidate_from_user_text(text: str) -> str | None:
+    """Best-effort area phrase extraction used only after LLM extraction fails.
+
+    Keep this conservative: prefer explicit "nearby" anchors and leading area
+    phrases before business terms, rather than embedding the whole sentence.
+    """
+    anchor = _extract_destination_from_text(text)
+    if anchor:
+        return anchor
+    stripped = (text or "").strip()
+    if not stripped:
+        return None
+    patterns = [
+        r"^(.+?)(?:的)?(?:房租|租金|房源|安全|治安|犯罪|便利|设施|娱乐|天气|通勤)",
+        r"^(.+?)\s+(?:rent|rental|safety|crime|amenity|convenience|entertainment|weather|commute)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, stripped, flags=re.IGNORECASE)
+        if not match:
+            continue
+        candidate = match.group(1).strip(" ,，。.;；:：!?！？")
+        candidate = re.sub(r"^(我想看|我想查|我想了解|想看|想查|查一下|看看|在|关于)\s*", "", candidate)
+        candidate = re.sub(r"(?:有(?:什么|啥|哪些|没有)?|有没有|有哪些|有什么|有啥).*$", "", candidate)
+        candidate = candidate.strip(" ,，。.;；:：!?！？的")
+        if 2 <= len(candidate) <= 80:
+            return candidate
+    return None
+
+
 def _reconcile_target_area_fields(update: dict) -> dict:
     area_name = update.get("target_area_name")
     area_query = _area_query_for_rag(area_name)
@@ -275,6 +304,8 @@ def _rag_resolve_area(state: OrchestratorState, update: dict) -> dict:
                             source="rag_resolved",
                         )
                     ]
+                    update["target_area_id"] = by_name.area_id
+                    update["target_area_name"] = by_name.area_name
                     constraints = dict(update.get("constraints") or {})
                     constraints["area_resolution"] = {
                         "method": "vector_rag",
@@ -300,6 +331,8 @@ def _rag_resolve_area(state: OrchestratorState, update: dict) -> dict:
                 update["detected_areas"] = [
                     DetectedArea(area_id=result.area_id, area_name=result.area_name, source="rag_resolved")
                 ]
+                update["target_area_id"] = result.area_id
+                update["target_area_name"] = result.area_name
                 constraints["area_resolution"] = {
                     "method": "vector_rag",
                     "resolved": True,
@@ -318,8 +351,11 @@ def _rag_resolve_area(state: OrchestratorState, update: dict) -> dict:
         return update
 
     # Important: only RAG-resolve area text extracted by LLM understand output.
-    # Do not embed the whole raw user sentence here.
+    # Do not embed the whole raw user sentence here. If extraction failed,
+    # fall back to a conservative phrase extractor for explicit area prefixes.
     area_text = _area_query_for_rag(_extract_area_text_from_update(update))
+    if not area_text:
+        area_text = _area_query_for_rag(_area_candidate_from_user_text(state.current_user_message or ""))
     if not area_text:
         return update
     try:
@@ -333,6 +369,8 @@ def _rag_resolve_area(state: OrchestratorState, update: dict) -> dict:
         update["detected_areas"] = [
             DetectedArea(area_id=result.area_id, area_name=result.area_name, source="rag_resolved")
         ]
+        update["target_area_id"] = result.area_id
+        update["target_area_name"] = result.area_name
         constraints["area_resolution"] = {
             "method": "vector_rag",
             "resolved": True,

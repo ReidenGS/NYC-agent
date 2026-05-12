@@ -200,7 +200,7 @@ def build_plan(task_type: str, query: str, slots: dict[str, Any], domain_context
         "area_id": area_id,
         "area_name": area_name,
         "queries": [q.__dict__ for q in queries],
-        "default_applied": ["window_days_30"] if task_type == "neighborhood.crime_query" else [],
+        "default_applied": [],
         "reason_summary": "基于 neighborhood schema 生成只读 SQL 查询计划。",
     }
 

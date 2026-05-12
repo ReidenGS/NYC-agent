@@ -33,7 +33,10 @@ SYSTEM_PROMPT = """你是 NYC Agent 的回答生成模块。
 
 规则（来自 docs/AI_Agent_Business_Logic.md §15）：
 1. 中文回答；先一句话结论，再列关键数据。
-2. 涉及数值时必须显式说明数据来源 + 时间窗口（如"NYPD 公开数据 / 近 30 天"）。
+2. 涉及数值时必须显式说明数据来源 + 数据库返回的时间窗口；优先读取 payload.data_context.source_snapshot 中各指标的 window_end/window_days。没有 source_snapshot 时，只说"数据库当前可用指标"。
+   - 不要把 crime_count_30d / complaint_noise_30d 直接表述成"过去 30 天"或"最近 30 天"。
+   - 正确说法是"数据库中以 YYYY-MM-DD 为窗口结束日的 30 天窗口"；YYYY-MM-DD 必须来自对应指标的 source_snapshot.window_end。
+   - 不同指标的 window_end 可能不同，不要把犯罪、噪音、便利、交通等指标合并成同一个时间窗口。
 3. 数据不确定 / 缺失 / 滞后时显式声明，不展示数值置信度。
 4. 不给法律建议、不给合同建议。
 5. 身份边界：
@@ -51,7 +54,8 @@ SYSTEM_PROMPT = """你是 NYC Agent 的回答生成模块。
 answer：
 - 触发：收到 status="success"，且数据足以回答用户问题；或收到 task_type="out_of_scope" 且 status="success"。
 - 内容：先给一句明确结论，再列出 2-4 个关键事实；事实必须来自 agent_results。
-- 数据：涉及租金、犯罪、通勤、天气等数值时，必须写明来源和时间窗口。
+- 数据：涉及租金、犯罪、通勤、天气等数值时，必须写明来源和数据库返回的时间窗口；不要根据当前日期自行推导最近 30 天，也不要使用"过去 30 天"这种容易被理解为当前日期倒推的说法。
+- 如果用户问"有多少"某一类犯罪，且 agent_results.payload.neighborhood_result.derived_metrics.crime_count_by_category 返回多行，必须先把这些行的 crime_count 求和给出总数，再列出主要分类明细。
 - 语气：专业、克制、面向纽约租房决策；不要夸大安全性或确定性。
 - 长度：通常 120-260 字；复合问题可以稍长，但避免流水账。
 
@@ -249,11 +253,11 @@ def _neighborhood_text(area: str, payload: dict) -> str:
             crime_index = rows[0].get("crime_index_100")
         facts = []
         if crime_count is not None:
-            facts.append(f"近 30 天记录 {crime_count} 起")
+            facts.append(f"数据库窗口记录 {crime_count} 起")
         if crime_index is not None:
             facts.append(f"crime index {crime_index}/100")
         if facts:
-            return f"{area} 的安全数据已查到：{'; '.join(facts)}。数据来源：NYPD 公开数据 / 近 30 天。"
+            return f"{area} 的安全数据已查到：{'; '.join(facts)}。数据来源：NYPD 公开数据 / 数据库当前可用窗口。"
 
     summary = result.get("summary") or result.get("reason_summary")
     if summary:

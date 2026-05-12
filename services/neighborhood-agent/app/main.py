@@ -129,20 +129,28 @@ PLAN_PROMPT = ChatPromptTemplate.from_template(
 
 SQL few-shot（语义示例）：
 - query: Astoria 安全怎么样
-  target_table: app_area_metrics_daily
-  sql: SELECT m.area_id, d.area_name, m.metric_date, m.crime_count_30d, m.crime_index_100, m.complaint_noise_30d
-       FROM app_area_metrics_daily m
-       JOIN app_area_dimension d ON d.area_id = m.area_id
+  target_table: v_area_metrics_latest
+  sql: SELECT v.area_id, d.area_name, v.metric_date, v.crime_count_30d, v.crime_index_100, v.complaint_noise_30d, v.source_snapshot
+       FROM v_area_metrics_latest v
+       JOIN app_area_dimension d ON d.area_id = v.area_id
        WHERE d.area_name ILIKE :target_area_name
-       ORDER BY m.metric_date DESC
-       LIMIT 20
-- query: Williamsburg 最近 30 天犯罪类型
+       LIMIT 1
+- query: Williamsburg 犯罪情况
   target_table: app_crime_incident_snapshot
-  sql: SELECT c.offense_category, COUNT(*) AS crime_count
+  queries:
+  - target_table: v_area_metrics_latest
+    purpose: analysis
+    sql: SELECT v.area_id, v.metric_date, v.crime_count_30d, v.crime_index_100, v.source_snapshot
+         FROM v_area_metrics_latest v
+         JOIN app_area_dimension d ON d.area_id = v.area_id
+         WHERE d.area_name ILIKE :target_area_name
+         LIMIT 1
+  - target_table: app_crime_incident_snapshot
+    purpose: detail
+    sql: SELECT c.offense_category, COUNT(*) AS crime_count
        FROM app_crime_incident_snapshot c
        JOIN app_area_dimension d ON d.area_id = c.area_id
        WHERE d.area_name ILIKE :target_area_name
-         AND c.occurred_date >= :window_start_date
        GROUP BY c.offense_category
        ORDER BY crime_count DESC
        LIMIT 20
@@ -165,6 +173,20 @@ SQL few-shot（语义示例）：
 
 规则补充：
 - 每个 query 必须提供 target_table，且 target_table 必须与 SQL 中 FROM/JOIN 的业务主表一致。
+- 默认查询数据库中已有的数据，不要根据当前日期自动添加 occurred_date / metric_date 时间过滤。
+- 不要把 current_date 转换成默认时间筛选；只有用户明确指定时间范围时，才添加时间过滤。
+- crime_count_30d、complaint_noise_30d 等字段表示数据库中已有的预计算窗口指标，不要额外生成当前日期往前推的过滤条件。
+- 需要综合区域画像或安全概览时，优先使用 v_area_metrics_latest 并返回 source_snapshot。
+- 犯罪查询应优先生成两条 query：analysis 查 v_area_metrics_latest 的 crime_count_30d/crime_index_100；detail 查 app_crime_incident_snapshot 按 offense_category 聚合。
+- 用户询问中文犯罪类别时，必须映射到 NYPD offense_category 的实际英文分类，不要只按英文直译做 ILIKE。
+  - 偷盗/盗窃/偷窃/theft/larceny：包含 PETIT LARCENY、GRAND LARCENY、OTHER OFFENSES RELATED TO THEFT、GRAND LARCENY OF MOTOR VEHICLE。
+  - 抢劫/robbery：包含 ROBBERY。
+  - 入室盗窃/burglary：包含 BURGLARY。
+  - 攻击/袭击/assault：包含 ASSAULT 3 & RELATED OFFENSES、FELONY ASSAULT。
+  - 骚扰/harassment：包含 HARRASSMENT 2。
+  - 危险武器/weapons：包含 DANGEROUS WEAPONS。
+  - 毒品/drugs：包含 DANGEROUS DRUGS。
+  - 交通违法/traffic：包含 VEHICLE AND TRAFFIC LAWS。
 
 域路由（必填）：每条 query 必须显式给出 domain ∈ {{"safety","amenity","entertainment"}}。
 - target_table=app_area_metrics_daily / app_crime_incident_snapshot / v_area_metrics_latest → domain="safety"
