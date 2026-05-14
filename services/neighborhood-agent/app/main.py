@@ -13,6 +13,7 @@ from python_a2a import A2AServer, AgentCard as PyAgentCard, AgentSkill as PyAgen
 from python_a2a.server.http import create_flask_app
 
 from app.config import settings
+from app.crime_category_rag import get_crime_category_resolver
 from app.neighborhood_logic import summarize_results
 from nyc_agent_shared.a2a_protocol import (
     build_response_message,
@@ -178,15 +179,9 @@ SQL few-shot（语义示例）：
 - crime_count_30d、complaint_noise_30d 等字段表示数据库中已有的预计算窗口指标，不要额外生成当前日期往前推的过滤条件。
 - 需要综合区域画像或安全概览时，优先使用 v_area_metrics_latest 并返回 source_snapshot。
 - 犯罪查询应优先生成两条 query：analysis 查 v_area_metrics_latest 的 crime_count_30d/crime_index_100；detail 查 app_crime_incident_snapshot 按 offense_category 聚合。
-- 用户询问中文犯罪类别时，必须映射到 NYPD offense_category 的实际英文分类，不要只按英文直译做 ILIKE。
-  - 偷盗/盗窃/偷窃/theft/larceny：包含 PETIT LARCENY、GRAND LARCENY、OTHER OFFENSES RELATED TO THEFT、GRAND LARCENY OF MOTOR VEHICLE。
-  - 抢劫/robbery：包含 ROBBERY。
-  - 入室盗窃/burglary：包含 BURGLARY。
-  - 攻击/袭击/assault：包含 ASSAULT 3 & RELATED OFFENSES、FELONY ASSAULT。
-  - 骚扰/harassment：包含 HARRASSMENT 2。
-  - 危险武器/weapons：包含 DANGEROUS WEAPONS。
-  - 毒品/drugs：包含 DANGEROUS DRUGS。
-  - 交通违法/traffic：包含 VEHICLE AND TRAFFIC LAWS。
+- 如果 domain_context_json 中存在 resolved_crime_categories，detail 查询必须使用这些 offense_category 值，不要再自行翻译或改写用户的犯罪类型。
+- resolved_crime_categories 是数组参数；SQL 中请写 c.offense_category = ANY(:resolved_crime_categories)，不要写 IN (:resolved_crime_categories)。
+- 如果没有 resolved_crime_categories，且用户只是问"有哪些类型/分类"，则按 offense_category 全量 GROUP BY。
 
 域路由（必填）：每条 query 必须显式给出 domain ∈ {{"safety","amenity","entertainment"}}。
 - target_table=app_area_metrics_daily / app_crime_incident_snapshot / v_area_metrics_latest → domain="safety"
@@ -317,13 +312,24 @@ def mcp_url_for(domain: str) -> str:
     raise LlmClientError(f"Unknown MCP domain: {domain}")
 
 
+def _normalize_list_param_sql(sql: str, params: dict[str, Any]) -> str:
+    normalized = sql
+    for key, value in (params or {}).items():
+        if not isinstance(value, list):
+            continue
+        normalized = normalized.replace(f"IN (:{key})", f"= ANY(:{key})")
+        normalized = normalized.replace(f"in (:{key})", f"= ANY(:{key})")
+    return normalized
+
+
 def execute_query(session_id: str | None, query: dict[str, Any], *, task_type: str, plan: dict[str, Any]) -> dict[str, Any]:
     domain = resolve_domain(query, task_type, plan)
+    params = query.get("params", {}) or {}
     args = {
         "target_table": query["target_table"],
         "purpose": query["purpose"],
-        "sql": query["sql"],
-        "params": query.get("params", {}),
+        "sql": _normalize_list_param_sql(str(query["sql"]), params),
+        "params": params,
         "max_rows": 50,
     }
     with httpx.Client(timeout=settings.request_timeout_seconds) as client:
@@ -342,6 +348,30 @@ def execute_query(session_id: str | None, query: dict[str, Any], *, task_type: s
         "source_tables": result.get("source_tables") or [],
         "error": result.get("error"),
     }
+
+
+def enrich_domain_context(task_type: str, query: str, domain_context: dict[str, Any]) -> dict[str, Any]:
+    context = dict(domain_context or {})
+    if task_type != "neighborhood.crime_query":
+        return context
+    if context.get("resolved_crime_categories"):
+        return context
+    try:
+        resolved = get_crime_category_resolver().resolve(query)
+    except Exception as exc:
+        context["crime_category_rag_error"] = str(exc)
+        return context
+    context["crime_category_rag_candidates"] = [
+        {
+            "offense_category": candidate.category,
+            "score": round(float(candidate.score), 4),
+            "reason": candidate.reason,
+        }
+        for candidate in resolved.candidates[: settings.crime_category_rag_top_k]
+    ]
+    if resolved.resolved and resolved.categories:
+        context["resolved_crime_categories"] = resolved.categories
+    return context
 
 
 def _requires_poi_coordinates(task_type: str) -> bool:
@@ -438,7 +468,7 @@ class NeighborhoodQueryServer(A2AServer):
             payload = req.payload
             base_query = str(payload.get("domain_user_query") or "")
             slots = payload.get("slots") or {}
-            domain_context = payload.get("domain_context") or {}
+            domain_context = enrich_domain_context(req.task_type, base_query, payload.get("domain_context") or {})
             planner_feedback = ""
             response = None
 
