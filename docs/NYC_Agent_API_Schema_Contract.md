@@ -133,12 +133,21 @@ A2A / Agent 错误码：
 - `MCP_TIMEOUT`
 - `MCP_BAD_RESPONSE`
 - `SQL_VALIDATION_FAILED`
+- `SQL_EXECUTION_FAILED`（`nl-to-sql-agent` 在 MCP 返回 `execution_error` 时使用）
+- `NL_TO_SQL_PLANNER_FAILED`（`nl-to-sql-agent` 内部 planner 抛非耗尽异常时使用）
+- `MCP_NL_TO_SQL_UNAVAILABLE`（`nl-to-sql-agent` 调 MCP `tools/call` 抛连接/协议异常时使用）
 - `DATA_NOT_FOUND`
 - `RATE_LIMITED`
 - `LLM_PARSE_FAILED`
 - `UNSUPPORTED_INTENT`
 - `INTERNAL_ERROR`
 - `OTHER`
+
+`nl-to-sql-agent` 的 `no_data` 响应同时使用 `payload.reason` 进一步标识来源（详见 [A2A_Protocol §4.2](NYC_Agent_A2A_Protocol.md)）：
+
+- `llm_sql_plan_retry_exhausted`（内层 LLM 3 次重试用尽，payload 含 `planner_error`、`mcp_retry_attempts`）
+- `mcp_sql_validation_retry_exhausted`（外层 MCP Validator 3 次重试用尽，payload 含 `planner_error`、`sql_plan`、`executions`、`mcp_retry_attempts=3`）
+- `unknown_planner_exit`（兜底，理论不应触发）
 
 MCP 错误码：
 - `INVALID_ARGUMENT`

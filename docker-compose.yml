@@ -199,58 +199,37 @@ services:
       timeout: 5s
       retries: 5
 
-  housing-agent:
+  nl-to-sql-agent:
     build:
       context: .
-      dockerfile: ./services/housing-agent/Dockerfile
-    container_name: nyc_agent_housing_agent
+      dockerfile: ./services/nl-to-sql-agent/Dockerfile
+    container_name: nyc_agent_nl_to_sql_agent
     restart: unless-stopped
     depends_on:
-      mcp-housing:
-        condition: service_healthy
-    environment:
-      PYTHONPATH: /app/shared
-      MCP_HOUSING_URL: ${MCP_HOUSING_URL_DOCKER:-http://mcp-housing:8021}
-      USE_LLM_SQL_PLANNER: ${USE_LLM_SQL_PLANNER:-true}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      HOUSING_AGENT_SQL_MODEL: ${HOUSING_AGENT_SQL_MODEL:-gpt-4o}
-      LLM_REQUEST_TIMEOUT_SECONDS: ${LLM_REQUEST_TIMEOUT_SECONDS:-20}
-    ports:
-      - "${HOUSING_AGENT_PORT:-8011}:8011"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8011/health').status==200 else 1)"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  neighborhood-agent:
-    build:
-      context: .
-      dockerfile: ./services/neighborhood-agent/Dockerfile
-    container_name: nyc_agent_neighborhood_agent
-    restart: unless-stopped
-    depends_on:
-      mcp-safety:
-        condition: service_healthy
       mcp-amenity:
         condition: service_healthy
       mcp-entertainment:
         condition: service_healthy
+      mcp-housing:
+        condition: service_healthy
+      mcp-safety:
+        condition: service_healthy
     environment:
       PYTHONPATH: /app/shared
-      MCP_SAFETY_URL: ${MCP_SAFETY_URL_DOCKER:-http://mcp-safety:8024}
       MCP_AMENITY_URL: ${MCP_AMENITY_URL_DOCKER:-http://mcp-amenity:8028}
       MCP_ENTERTAINMENT_URL: ${MCP_ENTERTAINMENT_URL_DOCKER:-http://mcp-entertainment:8029}
+      MCP_HOUSING_URL: ${MCP_HOUSING_URL_DOCKER:-http://mcp-housing:8021}
+      MCP_SAFETY_URL: ${MCP_SAFETY_URL_DOCKER:-http://mcp-safety:8024}
+      NL_TO_SQL_SKILL_ROOT: ${NL_TO_SQL_SKILL_ROOT_DOCKER:-/app/skills/nyc-nl-to-sql}
       USE_LLM_SQL_PLANNER: ${USE_LLM_SQL_PLANNER:-true}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      NEIGHBORHOOD_AGENT_SQL_MODEL: ${NEIGHBORHOOD_AGENT_SQL_MODEL:-gpt-4o}
+      NL_TO_SQL_AGENT_MODEL: ${NL_TO_SQL_AGENT_MODEL:-gpt-4o}
       LLM_REQUEST_TIMEOUT_SECONDS: ${LLM_REQUEST_TIMEOUT_SECONDS:-20}
     ports:
-      - "${NEIGHBORHOOD_AGENT_PORT:-8012}:8012"
+      - "${NL_TO_SQL_AGENT_PORT:-8016}:8016"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8012/health').status==200 else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8016/health').status==200 else 1)"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -376,11 +355,9 @@ services:
         condition: service_healthy
       profile-agent:
         condition: service_healthy
-      neighborhood-agent:
+      nl-to-sql-agent:
         condition: service_healthy
       weather-agent:
-        condition: service_healthy
-      housing-agent:
         condition: service_healthy
       transit-agent:
         condition: service_healthy
@@ -392,8 +369,7 @@ services:
       ORCHESTRATOR_RESPOND_MODEL: ${ORCHESTRATOR_RESPOND_MODEL:-gpt-4o-mini}
       DATABASE_URL_ASYNC: ${DATABASE_URL_ASYNC_DOCKER:-postgresql://nyc_agent:nyc_agent_password@postgres:5432/nyc_agent}
       PROFILE_AGENT_URL: ${PROFILE_AGENT_URL_DOCKER:-http://profile-agent:8014}
-      HOUSING_AGENT_URL: ${HOUSING_AGENT_URL_DOCKER:-http://housing-agent:8011}
-      NEIGHBORHOOD_AGENT_URL: ${NEIGHBORHOOD_AGENT_URL_DOCKER:-http://neighborhood-agent:8012}
+      NL_TO_SQL_AGENT_URL: ${NL_TO_SQL_AGENT_URL_DOCKER:-http://nl-to-sql-agent:8016}
       TRANSIT_AGENT_URL: ${TRANSIT_AGENT_URL_DOCKER:-http://transit-agent:8013}
       WEATHER_AGENT_URL: ${WEATHER_AGENT_URL_DOCKER:-http://weather-agent:8015}
       REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-30}

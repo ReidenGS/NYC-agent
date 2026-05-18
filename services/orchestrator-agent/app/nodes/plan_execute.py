@@ -15,11 +15,13 @@ from app.state import AgentResult, OrchestratorState
 
 logger = logging.getLogger(__name__)
 
-NEIGHBORHOOD_INTENTS = {
-    "neighborhood.crime_query",
+NL_TO_SQL_INTENTS = {
     "neighborhood.convenience_query",
     "neighborhood.entertainment_query",
+    "neighborhood.crime_query",
     "area.metrics_query",
+    "housing.rent_query",
+    "housing.listing_search",
 }
 
 WEATHER_INTENTS = {
@@ -27,6 +29,9 @@ WEATHER_INTENTS = {
     "weather.hourly_forecast",
 }
 
+# Used only to pick the payload shape for nl-to-sql calls; the housing payload
+# adds bedroom_type / budget / listing_limit slots that the neighborhood payload
+# does not carry.
 HOUSING_INTENTS = {
     "housing.rent_query",
     "housing.listing_search",
@@ -102,7 +107,7 @@ def _extract_budget_monthly(state: OrchestratorState) -> float | None:
 
 
 _BEDROOM_NORMALIZE = {
-    # housing-agent expects studio / 1br / 2br / 3br / 4br tokens.
+    # nl-to-sql housing intents expect studio / 1br / 2br / 3br / 4br tokens.
     "studio": "studio", "开间": "studio", "studios": "studio",
     "1": "1br", "1b": "1br", "1br": "1br", "1bd": "1br",
     "1b1b": "1br", "1bed1bath": "1br",
@@ -117,7 +122,7 @@ _BEDROOM_NORMALIZE = {
 
 
 def _extract_bedroom_type(state: OrchestratorState) -> str | None:
-    """Pull bedroom and normalize it into housing-agent's enum.
+    """Pull bedroom and normalize it into the housing SQL enum.
 
     The LLM understand node may store this under various keys/values
     (`bedroom`, `bedroom_type`, '一居', '1b', '1 bedroom', ...). Map
@@ -203,8 +208,8 @@ def _build_transit_payload(state: OrchestratorState) -> dict:
 
 
 def _build_housing_payload(state: OrchestratorState) -> dict:
-    """housing-agent reads area_id (required), bedroom_type (required for
-    budget_fit / listing_candidates), and budget_monthly from slots."""
+    """nl-to-sql housing intents read area_id (required), bedroom_type (required
+    for budget_fit / listing_candidates), and budget_monthly from slots."""
     slots = _area_slots(state)
     bedroom = _extract_bedroom_type(state)
     if bedroom:
@@ -345,12 +350,11 @@ def _dispatch_comparison(state: OrchestratorState) -> list[AgentResult]:
 
 
 def _dispatch_by_intent(state: OrchestratorState, intent: str) -> AgentResult | list[AgentResult]:
-    if intent in NEIGHBORHOOD_INTENTS:
-        return _dispatch_single(state, "neighborhood", _build_neighborhood_payload, task_type=intent)
+    if intent in NL_TO_SQL_INTENTS:
+        payload_builder = _build_housing_payload if intent in HOUSING_INTENTS else _build_neighborhood_payload
+        return _dispatch_single(state, "nl-to-sql", payload_builder, task_type=intent)
     if intent in WEATHER_INTENTS:
         return _dispatch_single(state, "weather", _build_weather_payload, task_type=intent)
-    if intent in HOUSING_INTENTS:
-        return _dispatch_single(state, "housing", _build_housing_payload, task_type=intent)
     if intent in TRANSIT_INTENTS:
         return _dispatch_single(state, "transit", _build_transit_payload, task_type=intent)
     if intent == "comparison":
@@ -386,12 +390,11 @@ def plan_execute(state: OrchestratorState) -> dict:
                 results.append(dispatched)
         return {"agent_results": results}
 
-    if intent in NEIGHBORHOOD_INTENTS:
-        return {"agent_results": [_dispatch_single(state, "neighborhood", _build_neighborhood_payload)]}
+    if intent in NL_TO_SQL_INTENTS:
+        payload_builder = _build_housing_payload if intent in HOUSING_INTENTS else _build_neighborhood_payload
+        return {"agent_results": [_dispatch_single(state, "nl-to-sql", payload_builder)]}
     if intent in WEATHER_INTENTS:
         return {"agent_results": [_dispatch_single(state, "weather", _build_weather_payload)]}
-    if intent in HOUSING_INTENTS:
-        return {"agent_results": [_dispatch_single(state, "housing", _build_housing_payload)]}
     if intent in TRANSIT_INTENTS:
         return {"agent_results": [_dispatch_single(state, "transit", _build_transit_payload)]}
     if intent == "comparison":

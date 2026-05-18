@@ -60,8 +60,7 @@ def call_agent(
 
 def _resolve_base(target: str) -> str:
     mapping = {
-        "neighborhood": settings.neighborhood_agent_url,
-        "housing": settings.housing_agent_url,
+        "nl-to-sql": settings.nl_to_sql_agent_url,
         "transit": settings.transit_agent_url,
         "weather": settings.weather_agent_url,
         "profile": settings.profile_agent_url,

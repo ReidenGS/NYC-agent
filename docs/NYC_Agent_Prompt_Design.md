@@ -51,6 +51,62 @@ ORCHESTRATOR_SUMMARY_MODEL=gpt-4o
 - 不编造 Domain Agent 没有返回的数据
 - 不暴露完整 Prompt、API Key、未脱敏 SQL 参数
 
+### 3B. NL-to-SQL Agent Prompt 迁移
+
+`nl-to-sql-agent` 已接管以下 SQL 类 intent：
+
+- `neighborhood.entertainment_query`（Phase 1）
+- `neighborhood.convenience_query`（Phase 1）
+- `housing.rent_query`（Phase 2.1）
+- `housing.listing_search`（Phase 2.2）
+- `neighborhood.crime_query`（Phase 3）
+- `area.metrics_query`（Phase 3）
+
+Prompt 使用项目内外部 skill，并按 `task_type` 做渐进式披露。当前结构：
+
+```text
+skills/nyc-nl-to-sql/
+  SKILL.md
+  references/
+    common-sql-rules.md
+    common-output-contract.md       # allowed query domains: amenity / entertainment / housing / safety
+    common-area-contract.md
+    intent-neighborhood-convenience.md
+    intent-neighborhood-entertainment.md
+    intent-neighborhood-crime.md
+    intent-area-metrics.md
+    intent-housing-rent.md
+    intent-housing-listing-search.md
+    table-app-area-dimension.md
+    table-app-map-poi-snapshot.md
+    table-app-area-convenience-category-daily.md
+    table-app-area-entertainment-category-daily.md
+    table-app-crime-incident-snapshot.md
+    table-v-area-metrics-latest.md
+    table-app-area-rental-market-daily.md
+    table-app-area-rent-benchmark-monthly.md
+    table-app-area-rental-listing-snapshot.md
+```
+
+加载规则（按 `task_type` 注入 common references + 对应 intent + 对应 table refs）：
+
+- `neighborhood.entertainment_query` → entertainment intent + `app_area_dimension` / `app_area_entertainment_category_daily` / `app_map_poi_snapshot`
+- `neighborhood.convenience_query` → convenience intent + `app_area_dimension` / `app_area_convenience_category_daily` / `app_map_poi_snapshot`
+- `neighborhood.crime_query` → crime intent + `app_area_dimension` / `v_area_metrics_latest` / `app_crime_incident_snapshot`
+- `area.metrics_query` → area metrics intent + `app_area_dimension` / `v_area_metrics_latest`
+- `housing.rent_query` → housing rent intent + `app_area_dimension` / `app_area_rental_market_daily` / `app_area_rent_benchmark_monthly` / `app_area_rental_listing_snapshot`
+- `housing.listing_search` → housing listing-search intent + `app_area_dimension` / `app_area_rental_listing_snapshot`
+
+边界：
+
+- Orchestrator 仍做 intent、slots、Area RAG 和最终自然语言回答。
+- `nl-to-sql-agent` 只生成 SQL plan 并执行 MCP。
+- `nl-to-sql-agent` 会注入 MCP tool catalog（`mcp-amenity` / `mcp-entertainment` / `mcp-housing` / `mcp-safety`）；LLM 必须为每条 query 输出 `mcp_tool`。
+- 代码校验 `mcp_tool`、domain 和 target table 后，通过 MCP Client 执行。
+- `nl-to-sql-agent` 不再注入硬编码全局 `DATABASE_SCHEMA_STRING` 或通用 `database_schema` 变量；字段信息只来自当前 `task_type` 选中的 skill references。
+- 内层 LLM 重试（3 次）的 feedback 标签 `[上一轮 SQL 计划校验失败原因]`；外层 MCP Validator 重试（3 次）的 feedback 标签 `[MCP SQL 校验器返回的错误]`，详见 [A2A_Protocol §4.2](NYC_Agent_A2A_Protocol.md)。
+- 不适用于 transit/weather/profile。
+
 ## 3A. Domain Agent 最小上下文边界
 Orchestrator 可以读取完整用户画像，但不能把完整 `profile_snapshot` 或完整 `conversation_summary` 传给 Domain Agent。
 
@@ -622,12 +678,11 @@ Agent：你是想了解 NYU 附近哪个居住区域？例如 East Village、Low
 
 ## 19. 后续待细化 Agent
 后续按以下顺序继续细化 Prompt：
-1. `housing-agent`
-2. `neighborhood-agent`
-3. `transit-agent`
-4. `weather-agent`
-5. `profile-agent`
-6. 推荐/Decision 逻辑
+1. `nl-to-sql-agent`（统一 SQL 规划器，见 §3B；详细 intent 规则放在 `skills/nyc-nl-to-sql/references/intent-*.md`）
+2. `transit-agent`
+3. `weather-agent`
+4. `profile-agent`
+5. 推荐/Decision 逻辑
 
 ## 20. 可落地 Prompt 模板草案
 以下模板用于后续代码实现时放入 `shared/prompts/orchestrator/`。模板中的 `{...}` 为运行时注入变量。
@@ -804,8 +859,10 @@ Rules:
 
 # Housing Agent Prompt 设计（V1）
 
+> **注：本节描述的 `housing-agent` 服务在 Phase 4 已删除**。所有 housing intent（`housing.rent_query` / `housing.listing_search`）已迁移到 `nl-to-sql-agent`，prompt 通过 `skills/nyc-nl-to-sql/references/intent-housing-rent.md` 与 `intent-housing-listing-search.md` 注入；详见本文 §3B。本节保留作为历史规则参考与新规则的源头。
+
 ## 21. Housing Agent 定位
-`housing-agent` 是租房领域 Domain Agent，负责把 Orchestrator 下发的 housing 任务转成可执行 SQL plan，并基于 MCP 执行结果生成结构化 housing 判断。
+（历史规则）`housing-agent` 曾是租房领域 Domain Agent，负责把 Orchestrator 下发的 housing 任务转成可执行 SQL plan，并基于 MCP 执行结果生成结构化 housing 判断。该职责现在由 `nl-to-sql-agent` 承担。
 
 负责：
 - 理解 `domain_user_query`
@@ -1221,8 +1278,10 @@ Return strict JSON with:
 
 # Neighborhood Agent Prompt 设计（V1）
 
+> **注：本节描述的 `neighborhood-agent` 服务在 Phase 4 已删除**。所有 neighborhood intent（`neighborhood.entertainment_query` / `neighborhood.convenience_query` / `neighborhood.crime_query`）与 `area.metrics_query` 已迁移到 `nl-to-sql-agent`，prompt 通过 `skills/nyc-nl-to-sql/references/intent-neighborhood-*.md` 与 `intent-area-metrics.md` 注入；详见本文 §3B。本节保留作为历史规则参考与新规则的源头。
+
 ## 35. Neighborhood Agent 定位
-`neighborhood-agent` 是区域画像领域 Domain Agent，负责安全、便利设施、娱乐设施和区域概览类任务。
+（历史规则）`neighborhood-agent` 曾是区域画像领域 Domain Agent，负责安全、便利设施、娱乐设施和区域概览类任务。该职责现在由 `nl-to-sql-agent` 承担。
 
 负责：
 - 理解 `domain_user_query`

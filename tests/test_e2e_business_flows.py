@@ -12,7 +12,7 @@ Prerequisites
 2. Bootstrap (sync_nta etc.) has been run at least once so app_area_dimension
    is populated. Without it, /chat target_area resolution will fail.
 3. .env has OPENAI_API_KEY and USE_LLM_SQL_PLANNER=true so the LLM SQL planner
-   inside housing-agent / neighborhood-agent is actually exercised.
+   inside nl-to-sql-agent is actually exercised.
 
 Run with:
     pytest tests/test_e2e_business_flows.py -v
@@ -228,19 +228,19 @@ def test_chat_target_area_followup() -> None:
 def test_chat_safety_question_neighborhood_agent(
     http: httpx.Client, session_id: str
 ) -> None:
-    """BL §9 step 4 — 问犯罪 → neighborhood-agent."""
+    """BL §9 step 4 — 问犯罪 → nl-to-sql-agent + mcp-safety."""
     body = _chat(http, session_id, "Astoria 的安全怎么样？")
     assert body["message_type"] == "answer"
     trace = (body.get("debug") or {}).get("trace_summary") or []
     services = {item.get("service") for item in trace}
-    assert "neighborhood-agent" in services or "orchestrator-agent" in services
+    assert "nl-to-sql-agent" in services or "orchestrator-agent" in services
 
 
 def test_chat_rent_question_housing_agent(
     http: httpx.Client, session_id: str
 ) -> None:
-    """BL §11 Housing Agent — rent range query routes through housing-agent
-    and exercises the LLM SQL planner."""
+    """BL §11 Housing — rent range query routes through nl-to-sql-agent and
+    exercises the LLM SQL planner."""
     body = _chat(
         http, session_id, "Astoria 的 1 居一般多少钱？预算 2500 美元以下"
     )

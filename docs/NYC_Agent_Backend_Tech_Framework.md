@@ -20,7 +20,7 @@
 |---|---|---|---|
 | 语言 / 运行时 | Python 3.11+ | — | — |
 | HTTP 服务框架（非 agent） | FastAPI | `fastapi`, `uvicorn` | api-gateway / data-sync-service / 7 个 mcp-* 服务都用 FastAPI（含 Pydantic 路由校验、auto OpenAPI 文档） |
-| HTTP 服务框架（agent） | Flask | `flask` | 6 个 A2A agent（orchestrator + housing/neighborhood/transit/weather/profile）用 Flask；`python_a2a.A2AServer.setup_routes(app)` 是 Flask-native，agent 同 Flask app 内顺手挂 `/health /ready /debug/prompts` |
+| HTTP 服务框架（agent） | Flask | `flask` | A2A agent（orchestrator + housing/neighborhood/transit/weather/profile + nl-to-sql）用 Flask；`python_a2a.A2AServer.setup_routes(app)` 是 Flask-native，agent 同 Flask app 内顺手挂 `/health /ready /debug/prompts` |
 | **A2A 通信协议** | **python-a2a** (themanojdesai) | `python-a2a` | Agent-to-Agent；server 端用 `A2AServer`，client 端用 `A2AClient`；消息类型用 `python_a2a.Message` |
 | **MCP 工具协议** | **python_a2a.mcp.FastMCP** | （随 python-a2a） | 7 个 mcp-* 服务用 `@mcp.tool()` 装饰器注册工具；通过 `python_a2a.mcp.transport.fastapi.create_fastapi_app(mcp)` mount 到 mcp 服务的 FastAPI app `/mcp/` 路径下 |
 | **LLM agent 编排** | **LangGraph** | `langgraph`, `langchain-core`, `langchain-openai` | orchestrator 用 LangGraph state machine 跑 ReAct 6 节点；其它 agent 内部仍是单次 LLM 调用，不引 LangGraph |
@@ -59,7 +59,30 @@
 1. **orchestrator Node 2 (understand)**：把用户消息解析成 `IntentResult`（intent / areas / constraints / persistable_field_updates）。
 2. **orchestrator Node 6 (respond)**：让 LLM 直接产出符合 `ChatResponseData` 模型的最终回答（message_type / answer / next_action / sources / data_quality）。
 
-domain agent 的 `housing-agent` / `neighborhood-agent` 自己的 SQL planner 用手写 prompt 字符串描述 schema 即可，**不强制**改造为 PydanticOutputParser；后续如果想统一，再迁移即可。
+`nl-to-sql-agent` 的 SQL planner 通过外部 skill references（`skills/nyc-nl-to-sql/`）注入字段说明，按 `task_type` 渐进式披露，**不**走 PydanticOutputParser。
+
+### B.1 NL-to-SQL Agent 迁移边界
+
+`nl-to-sql-agent` 接管所有 SQL generation + MCP execution 类 intent。当前已迁移：
+
+- `neighborhood.entertainment_query`（Phase 1）
+- `neighborhood.convenience_query`（Phase 1）
+- `housing.rent_query`（Phase 2.1）
+- `housing.listing_search`（Phase 2.2）
+- `neighborhood.crime_query`（Phase 3）
+- `area.metrics_query`（Phase 3）
+
+职责边界：
+- Orchestrator 仍负责 intent、slots、Area RAG、缺槽追问、调度和最终自然语言回复。
+- `nl-to-sql-agent` 只接收 orchestrator 已结构化的 `task_type`、`domain_user_query`、`slots`、`domain_context`。
+- `nl-to-sql-agent` 使用外部 skill `skills/nyc-nl-to-sql` 加载 SQL prompt；按 `task_type` 注入公共规则（safety / amenity / entertainment / housing）、intent 规则和必要 table reference。
+- `nl-to-sql-agent` 不再保留硬编码全局 `DATABASE_SCHEMA_STRING`，也不注入通用 `database_schema` 变量。
+- LLM 生成 SQL plan，并在每条 query 中从注入的 MCP tool catalog（`mcp-amenity` / `mcp-entertainment` / `mcp-housing` / `mcp-safety`）选择 `mcp_tool`。
+- `nl-to-sql-agent` 校验 `mcp_tool`、domain 和 target table 后，通过 MCP Client `tools/call` 执行。
+- 内层 3 次 LLM 重试（解析 / 本地 `validate_plan` 失败）+ 外层 3 次 MCP 校验重试（MCP Validator 拒绝 SQL 时把错误回灌 LLM 重新生成）。两层耗尽分别返回 `no_data: llm_sql_plan_retry_exhausted` 与 `no_data: mcp_sql_validation_retry_exhausted`，payload 带 `mcp_retry_attempts`。
+- `transit-agent`、`weather-agent`、`profile-agent` 不进入 SQL agent 合并范围。
+
+Phase 4 已删除原 `housing-agent` 与 `neighborhood-agent` 服务及其端口（8011/8012）；本节中提到这两个服务名的位置仅作为历史记录。
 
 ### C. Redis 4 处用法
 | 调用方 | key 模式 | TTL | 目的 |
@@ -82,7 +105,7 @@ LangGraph 的所有节点、LLM 调用、tool 调用自动上报；不上报的�
 
 ## 2.2 Downstream agent 无状态契约
 
-`housing-agent` / `neighborhood-agent` / `transit-agent` / `weather-agent` 改造为**纯无状态函数**：
+`nl-to-sql-agent` / `transit-agent` / `weather-agent` 改造为**纯无状态函数**：
 - **不调** `mcp-profile.get_snapshot`
 - 完全信任 orchestrator 在 A2A payload 里塞的 `slots`
 - 每次 A2A 调用必须自带：
@@ -106,8 +129,7 @@ LangGraph 的所有节点、LLM 调用、tool 调用自动上报；不上报的�
 MVP 服务：
 - `api-gateway`：前端入口、会话 API、用户请求转发
 - `orchestrator-agent`：意图理解、任务拆分、A2A 调度、结果合并
-- `housing-agent`：租金、房源、预算匹配
-- `neighborhood-agent`：犯罪、安全、便利、娱乐、区域画像
+- `nl-to-sql-agent`：处理 entertainment / convenience / crime / area_metrics / housing.rent / housing.listing 等 SQL plan 生成、MCP 路由（amenity/entertainment/housing/safety）和结果归一化
 - `transit-agent`：静态通勤、实时地铁/公交、下一班车
 - `weather-agent`：目标区域当前天气、小时级天气预报、指定时刻天气问答
 - `profile-agent`：槽位、权重、会话状态
@@ -130,11 +152,10 @@ MVP 服务：
 建议端口：
 - `api-gateway`: `8000`
 - `orchestrator-agent`: `8010`
-- `housing-agent`: `8011`
-- `neighborhood-agent`: `8012`
 - `transit-agent`: `8013`
 - `profile-agent`: `8014`
 - `weather-agent`: `8015`
+- `nl-to-sql-agent`: `8016`
 - `mcp-housing`: `8021`
 - `mcp-safety`: `8022`
 - `mcp-amenity`: `8023`
@@ -166,17 +187,15 @@ MVP 可以先启动全部服务；如果调试压力大，优先保证：
 2. `api-gateway` 转发给 `orchestrator-agent`
 3. `orchestrator-agent` 抽取意图、槽位、权重
 4. 如果当前 intent 需要 `target_area` 且缺少该字段，返回追问
-5. 如果是租金/房源问题，调用 `housing-agent`
-6. 如果是犯罪/便利/娱乐问题，调用 `neighborhood-agent`
-7. 如果是实时通勤问题，调用 `transit-agent`
-8. 如果是天气问题，调用 `weather-agent`
-9. 如果涉及权重/会话状态，调用 `profile-agent`
-10. Orchestrator 合并答案并返回前端
+5. 如果是 SQL 类业务 intent（`housing.rent_query` / `housing.listing_search` / `neighborhood.entertainment_query` / `neighborhood.convenience_query` / `neighborhood.crime_query` / `area.metrics_query`），调用 `nl-to-sql-agent`
+6. 如果是实时通勤问题，调用 `transit-agent`
+7. 如果是天气问题，调用 `weather-agent`
+8. 如果涉及权重/会话状态，调用 `profile-agent`
+9. Orchestrator 合并答案并返回前端
 
 Agent 职责：
 - `orchestrator-agent`：只负责判断、调度、聚合，不直接访问外部数据
-- `housing-agent`：调用 `mcp-housing`，处理租金、房源、执行包
-- `neighborhood-agent`：调用 `mcp-safety`、`mcp-amenity`、`mcp-entertainment`，处理区域指标
+- `nl-to-sql-agent`：只负责受控 SQL 计划生成、按 `task_type` 调 MCP（`mcp-amenity` / `mcp-entertainment` / `mcp-housing` / `mcp-safety`）、归一化 SQL 结果；不生成最终自然语言回答
 - `transit-agent`：调用 `mcp-transit`，处理静态/实时通勤
 - `weather-agent`：调用 `mcp-weather`，处理当前/小时级天气
 - `profile-agent`：调用 `mcp-profile`，处理 session、slots、weights
@@ -197,8 +216,7 @@ MVP MCP 服务：
 - `mcp-profile`
 
 Agent 层保持粗粒度：
-- `neighborhood-agent` 同时调用 `mcp-safety`、`mcp-amenity`、`mcp-entertainment`
-- 后续可演进为 `safety-agent`、`amenity-agent`、`entertainment-agent`
+- `nl-to-sql-agent` 按 `task_type` 路由到 `mcp-safety` / `mcp-amenity` / `mcp-entertainment` / `mcp-housing` 四个 MCP（详见 [NYC_Agent_MCP_Design.md](</Users/jackiewen/Documents/NYC agent/NYC_Agent_MCP_Design.md>) §4A）
 
 ## 7. API Gateway 路由
 API Gateway 采用薄网关设计，不保存业务状态，不直接访问数据库，不直接调用 MCP。
@@ -606,8 +624,8 @@ Domain 映射：
 
 | domain | target agent |
 |---|---|
-| `housing` | `housing-agent` |
-| `neighborhood` | `neighborhood-agent` |
+| `housing` | `nl-to-sql-agent` |
+| `neighborhood` | `nl-to-sql-agent` |
 | `transit` | `transit-agent` |
 | `weather` | `weather-agent` |
 | `profile` | `profile-agent` |
@@ -728,7 +746,7 @@ Slot 来源：
 2. weight_safety 上调
 3. weight_rent 上调
 4. 更新 profile
-5. 再调用 neighborhood-agent / housing-agent
+5. 再调用 nl-to-sql-agent（neighborhood / housing intent）
 ```
 
 ### 8.8 直接回答、拒答与自我认知
@@ -876,7 +894,7 @@ Orchestrator 的 `understand_prompt` 不能输出或控制：
 - API Key
 - 任意代码
 
-说明：这里限制的是 Orchestrator 的一级理解 prompt。`housing-agent` 和 `neighborhood-agent` 的领域 SQL prompt 可以生成只读 SQL，但必须经过 MCP SQL Validator 校验后才能执行。
+说明：这里限制的是 Orchestrator 的一级理解 prompt。`nl-to-sql-agent` 的领域 SQL prompt（来自 `skills/nyc-nl-to-sql/` 外部 skill）可以生成只读 SQL，但必须经过 MCP SQL Validator 校验后才能执行。
 
 ### 8.14 关键词 Fallback Parser
 当 LLM 不可用或结构化输出失败时，Orchestrator 使用最小关键词 fallback parser。
@@ -940,9 +958,9 @@ Orchestrator 落库精简决策记录，用于 debug、demo 和复盘。
 Domain Agent 是领域执行层，负责把 Orchestrator 下发的结构化任务转成领域内可执行计划。
 
 适用服务：
-- `housing-agent`
-- `neighborhood-agent`
+- `nl-to-sql-agent`
 - `transit-agent`
+- `weather-agent`
 - `profile-agent`
 
 总体边界：
@@ -989,25 +1007,25 @@ Orchestrator 调用 Domain Agent 时，必须传递领域相关原始表达，�
 ```
 
 多意图问题中，Orchestrator 需要拆分并传递 domain-specific query：
-- 给 `neighborhood-agent`：`Astoria 安全吗？`
-- 给 `housing-agent`：`Astoria 房租贵不贵？`
+- 给 `nl-to-sql-agent`（neighborhood.crime_query）：`Astoria 安全吗？`
+- 给 `nl-to-sql-agent`（housing.rent_query）：`Astoria 房租贵不贵？`
 - 给 `transit-agent`：`Astoria 去 NYU 通勤方便吗？`
 
 ### 9.2 SQL Generation 使用范围
-SQL generation 只用于数据分析型 Agent：
-- `housing-agent`
-- `neighborhood-agent`
+SQL generation 只在 `nl-to-sql-agent` 中发生（统一规划器，按 `task_type` 注入相应 skill references）。
 
 不用于：
 - `transit-agent`
 - `profile-agent`
+- `weather-agent`
 
 原因：
 - `transit-agent` 依赖 MTA API、GTFS-RT、Bus Time 和短缓存，不适合 SQL 生成
 - `profile-agent` 涉及 session/profile 状态写入，必须使用固定读写接口
+- `weather-agent` 使用 NWS API 与 grid mapping，无 SQL 需求
 
 ### 9.3 Controlled SQL Generation Mode
-`housing-agent` 和 `neighborhood-agent` 使用 Controlled SQL Generation Mode。
+`nl-to-sql-agent` 使用 Controlled SQL Generation Mode。
 
 流程：
 ```text
@@ -1051,13 +1069,26 @@ SQL schema 按 `task_type` 运行时动态注入。
 - 让 SQL 生成更稳定
 
 ### 9.5 SQL Prompt 结构
-SQL 生成 prompt 由三部分组成：
+Legacy domain agent 的 SQL 生成 prompt 由三部分组成：
 ```text
 shared_sql_safety_prompt
 + domain_schema_prompt
 + domain_business_rules_prompt
 + domain_user_query
 ```
+
+Phase 1 的 `nl-to-sql-agent` 使用外部 skill 组装 prompt：
+
+```text
+common-sql-rules.md
++ common-output-contract.md
++ common-area-contract.md
++ intent-{task_type}.md
++ table-{required_table}.md
++ domain_user_query / slots / domain_context
+```
+
+字段信息只来自当前 `task_type` 选中的 table reference；不会一次性注入全部 neighborhood 表，也不会从代码里的全局 `DATABASE_SCHEMA_STRING` 注入 schema。MCP tool catalog 由 `nl-to-sql-agent` 注入，LLM 必须为每条 query 输出 `mcp_tool`。
 
 共享 SQL 安全规范：
 - 只允许生成 `SELECT`
@@ -1073,8 +1104,8 @@ shared_sql_safety_prompt
 - 不确定时返回 `unsupported_data_request`
 
 领域规则示例：
-- `housing-agent`：详细 Prompt 与 SQL 规则见 [NYC_Agent_Prompt_Design.md](</Users/jackiewen/Documents/NYC agent/docs/NYC_Agent_Prompt_Design.md>) 的 Housing Agent 部分。租金查询优先 `market_daily -> listing_snapshot -> benchmark_monthly`；预算匹配使用样本感知规则；房源默认 active，active 无数据时 fallback 最近看到的 listing 并标记非实时库存。
-- `neighborhood-agent`：详细 Prompt 与 SQL 规则见 [NYC_Agent_Prompt_Design.md](</Users/jackiewen/Documents/NYC agent/docs/NYC_Agent_Prompt_Design.md>) 的 Neighborhood Agent 部分。安全问题默认近 30 天；POI 问题默认按 NTA 内分类聚合；点位 detail 限制 20 个；不生成最终个人化居住建议。
+- `nl-to-sql-agent`（housing intents）：详见 [NYC_Agent_Prompt_Design.md](</Users/jackiewen/Documents/NYC agent/docs/NYC_Agent_Prompt_Design.md>) §3B + `skills/nyc-nl-to-sql/references/intent-housing-*.md`。租金查询优先 `market_daily -> listing_snapshot -> benchmark_monthly`；预算匹配使用样本感知规则；房源默认 active，active 无数据时 fallback 最近看到的 listing 并标记非实时库存。
+- `nl-to-sql-agent`（neighborhood / area_metrics intents）：详见 [NYC_Agent_Prompt_Design.md](</Users/jackiewen/Documents/NYC agent/docs/NYC_Agent_Prompt_Design.md>) §3B + `skills/nyc-nl-to-sql/references/intent-neighborhood-*.md` / `intent-area-metrics.md`。安全问题查询 `v_area_metrics_latest` + `app_crime_incident_snapshot`；POI 问题默认按 NTA 内分类聚合；点位 detail 限制 20 个；不生成最终个人化居住建议。
 - `transit-agent`：详细 Prompt 与工具调用规则见 [NYC_Agent_Prompt_Design.md](</Users/jackiewen/Documents/NYC agent/docs/NYC_Agent_Prompt_Design.md>) 的 Transit Agent 部分。不使用 SQL generation；只调用 `mcp-transit` 固定工具；下一班车强制要求 mode/route/stop/direction；通勤时间强制要求 origin/destination/mode；实时失败时按 cached/static fallback。
 - `weather-agent`：详细 Prompt 与工具调用规则见 [NYC_Agent_Prompt_Design.md](</Users/jackiewen/Documents/NYC agent/docs/NYC_Agent_Prompt_Design.md>) 的 Weather Agent 部分。不使用 SQL generation；只调用 `mcp-weather` 固定工具；允许继承 target_area；NWS grid 缓存 7 天、小时预报缓存 30-60 分钟；天气失败不阻塞核心租房回答。
 - `profile-agent`：详细 Prompt 与状态管理规则见 [NYC_Agent_Prompt_Design.md](</Users/jackiewen/Documents/NYC agent/docs/NYC_Agent_Prompt_Design.md>) 的 Profile Agent 部分。主要使用确定性规则和 `mcp-profile` 固定工具；不生成 SQL；不做推荐打分；只保存短 summary 和 last_response_refs。

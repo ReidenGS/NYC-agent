@@ -72,7 +72,7 @@ def test_two_turn_missing_area_then_fill_routes_original_housing_intent(http):
         "housing.rent_query",
         "housing.listing_search",
     }
-    assert "housing-agent" in _agents(second)
+    assert "nl-to-sql-agent" in _agents(second)
     assert "target_area" not in (second.get("missing_slots") or [])
 
 
@@ -93,7 +93,7 @@ def test_pending_is_cleared_when_user_switches_topic(http):
     }
     agents = _agents(second)
     assert "weather-agent" in agents
-    assert "housing-agent" not in agents
+    assert "nl-to-sql-agent" not in agents
 
 
 def test_pending_followup_memory_is_session_scoped(http):
@@ -111,4 +111,4 @@ def test_pending_followup_memory_is_session_scoped(http):
         "housing.rent_query",
         "housing.listing_search",
     }
-    assert "housing-agent" not in _agents(second)
+    assert "nl-to-sql-agent" not in _agents(second)

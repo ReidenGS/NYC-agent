@@ -26,8 +26,7 @@ class Settings(BaseSettings):
     langgraph_checkpoint_schema: str = "langgraph_checkpoints"
 
     # A2A downstream URLs
-    neighborhood_agent_url: str = "http://localhost:8012"
-    housing_agent_url: str = "http://localhost:8011"
+    nl_to_sql_agent_url: str = "http://localhost:8016"
     transit_agent_url: str = "http://localhost:8013"
     weather_agent_url: str = "http://localhost:8015"
     profile_agent_url: str = "http://localhost:8014"

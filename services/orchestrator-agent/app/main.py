@@ -319,7 +319,7 @@ def ready() -> dict[str, Any]:
         "graph": "compiled" if _graph is not None else "not_ready",
         "checkpointer": "postgres" if _pool is not None else "ephemeral",
         "openai_api_key": "configured" if settings.openai_api_key else "missing",
-        "neighborhood_agent": settings.neighborhood_agent_url,
+        "nl_to_sql_agent": settings.nl_to_sql_agent_url,
     }
     return {"status": "ok" if _graph is not None else "degraded", "dependencies": deps}
 

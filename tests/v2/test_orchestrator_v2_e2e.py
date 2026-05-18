@@ -15,7 +15,7 @@ import httpx
 import pytest
 
 V2_URL = os.environ.get("ORCHESTRATOR_V2_URL", "http://localhost:8010").rstrip("/")
-TIMEOUT = 60.0  # LangGraph + 2 LLM calls + A2A → neighborhood-agent → mcp-sql → PG
+TIMEOUT = 60.0  # LangGraph + 2 LLM calls + A2A → nl-to-sql-agent → mcp → PG
 
 
 def _v2_up() -> bool:
@@ -49,7 +49,7 @@ def test_v2_health_and_ready(http):
 
 def test_v2_chat_safety_question_returns_real_data(http):
     """The first-cut happy path: 'Astoria 安全吗' → neighborhood.crime_query
-    → A2A neighborhood-agent → mcp-sql → real PG numbers → respond node."""
+    → A2A nl-to-sql-agent → mcp-safety → real PG numbers → respond node."""
     session_id = "test_v2_session_safety"
     response = http.post(
         f"{V2_URL}/chat",
@@ -83,7 +83,7 @@ def test_v2_chat_safety_question_returns_real_data(http):
 
 def test_v2_chat_housing_routes_through_housing_agent(http):
     """Cut 3: 'Astoria 的 1 居一般多少钱？预算 2500 美元以下'
-    → housing.* intent → A2A housing-agent → mcp-sql → respond node.
+    → housing.* intent → A2A nl-to-sql-agent → mcp-housing → respond node.
     Also exercises budget + bedroom slot extraction in understand."""
     session_id = "test_v2_session_housing"
     response = http.post(
@@ -107,7 +107,7 @@ def test_v2_chat_housing_routes_through_housing_agent(http):
         f"housing query should map to housing.* intent, got {intent!r}"
 
     agents = {r.get("agent") for r in (debug.get("agent_results") or [])}
-    assert "housing-agent" in agents, f"expected housing-agent, got {agents!r}"
+    assert "nl-to-sql-agent" in agents, f"expected nl-to-sql-agent, got {agents!r}"
 
 
 def test_v2_chat_weather_routes_through_weather_agent(http):

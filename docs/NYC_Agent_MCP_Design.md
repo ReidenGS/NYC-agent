@@ -20,7 +20,7 @@ MVP 拆分为 7 个 MCP 服务：
 - 静态/准静态数据优先读 PostgreSQL/PostGIS
 - 实时/强用户相关数据允许按需调用外部 API，并写 Redis/PostgreSQL
 - `mcp-housing`、`mcp-safety`、`mcp-amenity`、`mcp-entertainment` 支持受控只读 SQL 执行
-- MCP 不生成 SQL；SQL 由对应 Domain Agent 基于动态注入 schema 生成
+- MCP 不生成 SQL；SQL 由对应 SQL planning agent 基于动态注入 schema / external skill 生成
 - MCP 必须先校验 SQL，再用只读数据库账号执行
 
 ## 2. 统一 MCP Response Envelope
@@ -84,7 +84,7 @@ MCP 错误码：
 - Orchestrator 启动时做工具发现/校验
 
 ## 4A. 受控只读 SQL 执行
-`housing-agent` 和 `neighborhood-agent` 可以生成只读 SQL，但 MCP 是最终安全边界。
+`nl-to-sql-agent` 是当前所有 SQL 类业务 intent 的统一规划器（Phase 4 已删除原 `housing-agent` 与 `neighborhood-agent` 服务）。MCP 是最终安全边界。
 
 适用 MCP：
 - `mcp-housing`
@@ -96,6 +96,21 @@ MCP 错误码：
 - `mcp-transit`：实时通勤走固定工具和外部 API
 - `mcp-weather`：天气走固定工具和 NWS API
 - `mcp-profile`：会话状态走固定读写接口
+
+MCP 路由规则（`nl-to-sql-agent` `tool_registry`）：
+
+| task_type | SQL plan 必须选择的 `mcp_tool` | 允许的 `target_table` |
+|---|---|---|
+| `neighborhood.entertainment_query` | `mcp-entertainment.execute_readonly_sql` | `app_area_entertainment_category_daily`、`app_map_poi_snapshot` |
+| `neighborhood.convenience_query` | `mcp-amenity.execute_readonly_sql` | `app_area_convenience_category_daily`、`app_map_poi_snapshot` |
+| `neighborhood.crime_query` | `mcp-safety.execute_readonly_sql` | `v_area_metrics_latest`、`app_crime_incident_snapshot`、`app_area_metrics_daily` |
+| `area.metrics_query` | `mcp-safety.execute_readonly_sql` | 同上 |
+| `housing.rent_query` | `mcp-housing.execute_readonly_sql` | `app_area_rental_market_daily`、`app_area_rent_benchmark_monthly`、`app_area_rental_listing_snapshot` |
+| `housing.listing_search` | `mcp-housing.execute_readonly_sql` | 同上 |
+
+- `nl-to-sql-agent` 校验 LLM 输出的 `mcp_tool` 是否存在于 tool registry，且 domain / target table 是否匹配该 tool。
+- `nl-to-sql-agent` 的 prompt 字段说明来自外部 skill reference，不是安全边界；MCP Validator 仍是最终表/字段白名单和只读 SQL 边界。
+- MCP Validator 拒绝 SQL 时返回 `status: validation_error`，`nl-to-sql-agent` 会按 [A2A_Protocol §4.2](NYC_Agent_A2A_Protocol.md) 把错误反馈给 LLM 最多 3 次重试。
 
 通用工具：`execute_readonly_sql`
 
@@ -176,7 +191,7 @@ SQL Validator 规则：
 负责房源、租金区间、租金基准、候选房源。
 
 主要执行模式：
-- `housing-agent` 基于租房领域 schema 生成只读 SQL
+- `nl-to-sql-agent` 基于 housing intent skill references 生成只读 SQL
 - `mcp-housing.execute_readonly_sql` 校验并执行 SQL
 - 以下固定工具可作为默认查询、fallback 或非 LLM 路径保留
 
@@ -297,7 +312,7 @@ SQL Validator 规则：
 负责犯罪数量、安全指标、安全地图图层。
 
 主要执行模式：
-- `neighborhood-agent` 基于安全领域 schema 生成只读 SQL
+- `nl-to-sql-agent` 基于安全领域 skill references（intent-neighborhood-crime / intent-area-metrics）生成只读 SQL
 - `mcp-safety.execute_readonly_sql` 校验并执行 SQL
 - 以下固定工具可作为默认查询、fallback 或非 LLM 路径保留
 
@@ -364,7 +379,7 @@ SQL Validator 规则：
 负责便利设施分类，如超市、公园、图书馆、学校、药店、健身房。
 
 主要执行模式：
-- `neighborhood-agent` 基于便利设施领域 schema 生成只读 SQL
+- `nl-to-sql-agent` 基于便利设施 intent skill references（intent-neighborhood-convenience）生成只读 SQL
 - `mcp-amenity.execute_readonly_sql` 校验并执行 SQL
 - 以下固定工具可作为默认查询、fallback 或非 LLM 路径保留
 
@@ -439,7 +454,7 @@ SQL Validator 规则：
 负责娱乐设施分类，如酒吧、电影院、夜店、剧院、餐厅。
 
 主要执行模式：
-- `neighborhood-agent` 基于娱乐设施领域 schema 生成只读 SQL
+- `nl-to-sql-agent` 基于娱乐设施 intent skill references（intent-neighborhood-entertainment）生成只读 SQL
 - `mcp-entertainment.execute_readonly_sql` 校验并执行 SQL
 - 以下固定工具可作为默认查询、fallback 或非 LLM 路径保留
 
@@ -860,7 +875,7 @@ SQL Validator 规则：
   "trace_id": "trace_123",
   "message_id": "msg_123",
   "source_agent": "orchestrator-agent",
-  "target_agent": "housing-agent",
+  "target_agent": "nl-to-sql-agent",
   "status": "succeeded"
 }
 ```

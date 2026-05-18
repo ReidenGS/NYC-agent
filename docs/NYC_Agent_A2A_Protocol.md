@@ -5,11 +5,10 @@
 
 适用服务：
 - `orchestrator-agent`
-- `housing-agent`
-- `neighborhood-agent`
 - `transit-agent`
 - `weather-agent`
 - `profile-agent`
+- `nl-to-sql-agent`（接管 entertainment / convenience / crime / area_metrics / housing.rent / housing.listing 的 SQL generation + MCP execution。Phase 4 已删除原 `housing-agent` 与 `neighborhood-agent` 服务）
 
 实现方式：
 - Agent 协作使用 `python-a2a`，server 端用 `python_a2a.A2AServer`（Flask-native），client 端用 `python_a2a.A2AClient`
@@ -34,22 +33,22 @@ A2A 协议在 python-a2a 实现里通过三个类承载：
 from python_a2a import AgentCard, AgentSkill, A2AServer
 
 card = AgentCard(
-    name="housing-agent",
-    description="纽约租房 / 房源 / 预算匹配",
-    url="http://housing-agent:8011",
+    name="nl-to-sql-agent",
+    description="受控 NL-to-SQL 查询规划与 MCP 执行 agent",
+    url="http://nl-to-sql-agent:8016",
     version="1.0.0",
     skills=[
-        AgentSkill(name="housing.rent_query",       description="查询某区域户型的租金区间"),
-        AgentSkill(name="housing.listing_search",   description="筛选符合预算和户型的真实房源"),
+        AgentSkill(name="nl_to_sql_query",
+                   description="执行 neighborhood / area_metrics / housing 只读 SQL 查询"),
     ],
     capabilities={"streaming": False, "async_tasks": False},
     default_input_modes=["text"],
     default_output_modes=["text", "data"],
 )
-agent = HousingAgentServer(agent_card=card)
+agent = NlToSqlQueryServer(agent_card=card)
 ```
 
-6 个 agent 的 AgentCard 由各自定义 `name / description / skills` 列表（与 §4 的 task_type 对齐）；`url` 用容器内部 hostname。
+5 个 agent（orchestrator-agent / nl-to-sql-agent / transit-agent / weather-agent / profile-agent）的 AgentCard 由各自定义 `name / description / skills` 列表（与 §4 的 task_type 对齐）；`url` 用容器内部 hostname。
 
 ### 2.2 Message.content 字段约定
 `Message` 类本身只有 `role + content + parent_message_id + conversation_id` 四个顶层字段。本项目的业务上下文统一塞进 `content` 这个 dict，字段约定如下：
@@ -63,7 +62,7 @@ agent = HousingAgentServer(agent_card=card)
     "trace_id": "trace_01H...",
     "session_id": "sess_01H...",
     "source_agent": "orchestrator-agent",
-    "target_agent": "housing-agent",
+    "target_agent": "nl-to-sql-agent",
     "next_action": "call_agent",
     "payload": { "...domain-specific..." },
     "slot_state": {
@@ -222,6 +221,69 @@ MVP 先支持以下 intent：
 - 用户说指定时间：Orchestrator 抽取 `target_time` 并传给 `weather-agent`
 - 天气不更新推荐权重，不触发推荐打分
 
+### 4.1 NL-to-SQL 路由
+
+以下 task 全部由 `nl-to-sql-agent` 接管（Phase 4 后原 `housing-agent` / `neighborhood-agent` 服务已删除）：
+
+| task_type | target_agent | MCP tool selected in SQL plan |
+|---|---|---|
+| `neighborhood.entertainment_query` | `nl-to-sql-agent` | `mcp-entertainment.execute_readonly_sql` |
+| `neighborhood.convenience_query` | `nl-to-sql-agent` | `mcp-amenity.execute_readonly_sql` |
+| `neighborhood.crime_query` | `nl-to-sql-agent` | `mcp-safety.execute_readonly_sql` |
+| `area.metrics_query` | `nl-to-sql-agent` | `mcp-safety.execute_readonly_sql` |
+| `housing.rent_query` | `nl-to-sql-agent` | `mcp-housing.execute_readonly_sql` |
+| `housing.listing_search` | `nl-to-sql-agent` | `mcp-housing.execute_readonly_sql` |
+
+`nl-to-sql-agent` 输入沿用普通 A2A `Message.content.payload`：
+
+```json
+{
+  "domain_user_query": "Hell's Kitchen 有什么娱乐设施？",
+  "slots": {
+    "area_id": {"value": "MN0402", "source": "session_memory", "confidence": 0.9},
+    "area_name": {"value": "Hell's Kitchen", "source": "session_memory", "confidence": 0.9}
+  },
+  "domain_context": {"point_limit": 20, "map_layer_requests": []}
+}
+```
+
+`nl-to-sql-agent` 会注入 MCP tool catalog；LLM 必须在 SQL plan 中为每条 query 输出 `mcp_tool`，代码再校验 tool registry、domain 和 target table。`nl-to-sql-agent` 返回的 payload 与对应 legacy agent 结果兼容：
+
+- `neighborhood.*` / `area.metrics_query`：`payload.neighborhood_result`
+- `housing.*`：`payload.housing_result`
+
+Prompt/schema 加载是 `nl-to-sql-agent` 内部实现细节，A2A payload 不传 `database_schema`。Agent 按 `task_type` 选择外部 skill references，只注入本任务需要的字段说明。
+
+```json
+{
+  "sql_plan": {},
+  "executions": [],
+  "neighborhood_result": {
+    "display_refs": {"map_points": [], "map_layer_ids": ["entertainment"]}
+  }
+}
+```
+
+### 4.2 NL-to-SQL 校验重试
+
+`nl-to-sql-agent` 在 A2A 调用内部做两层重试：
+
+- **内层（LLM 重试）** —— `generate_sql_plan` 内 3 次重试；解析或本地 `validate_plan` 失败时把 `[上一轮 SQL 计划校验失败原因]` 拼回 prompt 再生成。3 次仍失败抛 `SQL_PLAN_RETRY_EXHAUSTED`。
+- **外层（MCP 校验重试）** —— 3 次重试；MCP Validator 返回 `validation_error` 时把 `[MCP SQL 校验器返回的错误]` 拼回 query 重生成 plan 再执行。
+
+终态对应的 A2A 响应：
+
+| 场景 | `status` | `payload.reason` | 附加字段 |
+|------|---------|------------------|----------|
+| 正常成功 | `success` | — | `sql_plan` / `executions` / `neighborhood_result \| housing_result` |
+| 所有 query 成功但归一化判定无数据 | `no_data` | — | 同上，`*_result.status == "no_data"` |
+| 内层 LLM 3 次耗尽 | `no_data` | `llm_sql_plan_retry_exhausted` | `planner_error`、`mcp_retry_attempts` |
+| 外层 MCP 校验 3 次耗尽 | `no_data` | `mcp_sql_validation_retry_exhausted` | `planner_error`、`mcp_retry_attempts=3`、`sql_plan`、`executions` |
+| MCP `execution_error` | `dependency_failed` | — | `error.code=SQL_EXECUTION_FAILED`、`payload.mcp_result` |
+| 缺槽 / 不支持 | `clarification_required` / `unsupported_data_request` | — | plan 内联字段 `missing_slots` / `unsupported_reason` |
+
+orchestrator respond 节点按 `status` + `reason` 翻译用户文案，不应假设 `nl-to-sql-agent` 已经把错误文本面向用户化。
+
 ## 5. next_action 枚举
 允许值：
 - `ask_follow_up`：缺槽，需要追问
@@ -259,9 +321,9 @@ A2A 调用采用混合并发：
 - 聚合结果时保留每个 Agent 的 `source/timestamp/confidence/data_quality`
 
 例子：
-用户问：“Greenpoint 安不安全，房租多少，通勤到 NYU 方便吗？”
-- 并行调用 `neighborhood-agent`
-- 并行调用 `housing-agent`
+用户问：”Greenpoint 安不安全，房租多少，通勤到 NYU 方便吗？”
+- 并行调用 `nl-to-sql-agent`（neighborhood.crime_query）
+- 并行调用 `nl-to-sql-agent`（housing.rent_query）
 - 并行调用 `transit-agent`
 - Orchestrator 合并结果后返回
 
@@ -395,7 +457,7 @@ CREATE TABLE IF NOT EXISTS app_a2a_trace_log (
 Astoria 安全吗？房租贵不贵？
 ```
 
-传给 `neighborhood-agent`：
+传给 `nl-to-sql-agent`（neighborhood.crime_query）：
 ```json
 {
   "task_type": "neighborhood.crime_query",
@@ -406,7 +468,7 @@ Astoria 安全吗？房租贵不贵？
 }
 ```
 
-传给 `housing-agent`：
+传给 `nl-to-sql-agent`（housing.rent_query）：
 ```json
 {
   "task_type": "housing.rent_query",

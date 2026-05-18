@@ -38,6 +38,7 @@
 - Frontend: `5173`（本地 dev server）
 - API Gateway: `8000`
 - Orchestrator: `8010`
+- NL-to-SQL Agent: `8016`（Phase 1 处理 entertainment / convenience SQL 生成与 MCP 执行）
 - Housing Agent: `8011`
 - Neighborhood Agent: `8012`
 - Transit Agent: `8013`
@@ -66,6 +67,9 @@
    - `respond`（组装用户回复）
    - `persist`（写 profile）
 4. 领域 Agent 生成 SQL 计划（LLM）并通过对应 MCP 执行只读 SQL。
+   - Phase 1 中，`neighborhood.entertainment_query` / `neighborhood.convenience_query` 改由 `nl-to-sql-agent` 生成 SQL 计划并调用 `mcp-entertainment` / `mcp-amenity`。
+   - `nl-to-sql-agent` 按 `task_type` 从 `skills/nyc-nl-to-sql` 注入公共规则、intent 规则和必要数据表字段，不再注入全局 neighborhood schema。
+   - `transit-agent`、`weather-agent`、`profile-agent` 不属于 SQL 生成合并范围，继续使用固定 MCP 工具链路。
 5. Orchestrator 聚合结果，返回 `answer + profile_snapshot + display_refs`。
 6. 前端用 `display_refs.map_points` 和 `map_layer_ids` 渲染地图标注。
 
@@ -151,4 +155,3 @@
 - `docs/NYC_Agent_A2A_Protocol.md`
 - `docs/NYC_Agent_Data_Sources_API_SQL.md`
 - `docs/AI_Agent_Business_Logic.md`
-

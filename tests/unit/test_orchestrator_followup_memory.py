@@ -399,7 +399,7 @@ def test_response_metadata_maps_agent_statuses(status, expected):
     state = OrchestratorState(
         agent_results=[
             AgentResult(
-                agent="housing-agent",
+                agent="nl-to-sql-agent",
                 task_type="housing.rent_query",
                 status=status,
                 payload={},
