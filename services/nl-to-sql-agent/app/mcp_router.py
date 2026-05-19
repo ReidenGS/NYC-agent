@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -62,6 +63,10 @@ def _parse_mcp_client_result(result: Any) -> dict[str, Any]:
 
 def call_mcp_tool(tool_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
     tool = get_mcp_sql_tool(tool_id)
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
     client = MCPClient(server_url=f"{tool.base_url.rstrip('/')}/mcp/")
     return _parse_mcp_client_result(client.call_tool_sync(tool.tool_name, **arguments))
 

@@ -134,9 +134,9 @@ def delete_session(request: ToolRequest) -> dict[str, Any]:
 
 # Cut 8.5 — mount FastMCP at /mcp.
 try:
-    from python_a2a.mcp.transport.fastapi import create_fastapi_app
     from app.mcp_server import mcp
-    app.mount("/mcp", create_fastapi_app(mcp))
+    from nyc_agent_shared.mcp_protocol import create_sse_compatible_fastapi_app
+    app.mount("/mcp", create_sse_compatible_fastapi_app(mcp))
 except Exception as _mcp_mount_exc:  # pragma: no cover
     import logging as _logging
     _logging.getLogger("mcp-profile").warning("MCP mount skipped: %s", _mcp_mount_exc)

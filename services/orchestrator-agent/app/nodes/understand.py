@@ -143,10 +143,11 @@ out_of_scope 示例：
 
 NTA 区域名映射示例：
 - Astoria = QN0101
-- LIC / Long Island City = QN0102
+- LIC / Long Island City = QN0201
 - Williamsburg = BK0101
 - Greenpoint = BK0102
-- Midtown = MN0101
+- Financial District / Wall Street / 华尔街 = MN0101
+- Midtown = MN0502
 - East Village = MN0303
 - Upper West Side = MN0702
 - Sunnyside = QN0201
@@ -170,14 +171,20 @@ def _build_llm() -> ChatOpenAI:
 
 AREA_ALIASES = {
     "astoria": ("QN0101", "Astoria"),
-    "lic": ("QN0102", "Long Island City"),
-    "long island city": ("QN0102", "Long Island City"),
+    "lic": ("QN0201", "Long Island City-Hunters Point"),
+    "long island city": ("QN0201", "Long Island City-Hunters Point"),
     "williamsburg": ("BK0101", "Williamsburg"),
     "greenpoint": ("BK0102", "Greenpoint"),
-    "midtown": ("MN0101", "Midtown"),
+    "华尔街": ("MN0101", "Financial District-Battery Park City"),
+    "wall street": ("MN0101", "Financial District-Battery Park City"),
+    "financial district": ("MN0101", "Financial District-Battery Park City"),
+    "financial district-battery park city": ("MN0101", "Financial District-Battery Park City"),
+    "battery park city": ("MN0101", "Financial District-Battery Park City"),
+    "fidi": ("MN0101", "Financial District-Battery Park City"),
+    "midtown": ("MN0502", "Midtown-Times Square"),
     "east village": ("MN0303", "East Village"),
     "upper west side": ("MN0702", "Upper West Side"),
-    "sunnyside": ("QN0201", "Sunnyside"),
+    "sunnyside": ("QN0202", "Sunnyside"),
     "bushwick": ("BK0401", "Bushwick"),
     "downtown brooklyn": ("BK0201", "Downtown Brooklyn"),
 }

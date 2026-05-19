@@ -15,10 +15,13 @@ from nyc_agent_shared.time import now_iso
 
 AREA_FIXTURES: dict[str, TargetArea] = {
     'QN0101': TargetArea(area_id='QN0101', area_name='Astoria', borough='Queens'),
-    'QN0102': TargetArea(area_id='QN0102', area_name='Long Island City', borough='Queens'),
+    'QN0102': TargetArea(area_id='QN0102', area_name='Old Astoria-Hallets Point', borough='Queens'),
+    'QN0201': TargetArea(area_id='QN0201', area_name='Long Island City-Hunters Point', borough='Queens'),
+    'QN0202': TargetArea(area_id='QN0202', area_name='Sunnyside', borough='Queens'),
     'BK0101': TargetArea(area_id='BK0101', area_name='Williamsburg', borough='Brooklyn'),
     'BK0102': TargetArea(area_id='BK0102', area_name='Greenpoint', borough='Brooklyn'),
-    'MN0101': TargetArea(area_id='MN0101', area_name='Midtown', borough='Manhattan'),
+    'MN0101': TargetArea(area_id='MN0101', area_name='Financial District-Battery Park City', borough='Manhattan'),
+    'MN0502': TargetArea(area_id='MN0502', area_name='Midtown-Times Square', borough='Manhattan'),
 }
 
 

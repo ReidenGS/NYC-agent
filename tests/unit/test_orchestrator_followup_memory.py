@@ -225,6 +225,46 @@ def test_understand_rag_resolves_leading_area_phrase_when_llm_misses_area(monkey
     assert update["target_area_name"] == "Financial District-Battery Park City"
 
 
+def test_understand_explicit_wall_street_overrides_existing_area(monkeypatch):
+    from app.nodes import understand as understand_mod
+    from app.nodes.understand import understand
+    from app.state import OrchestratorState
+
+    monkeypatch.setattr(understand_mod.settings, "openai_api_key", "")
+
+    update = understand(
+        OrchestratorState(
+            current_user_message="华尔街地区的安全情况怎么样？请给我犯罪数据。",
+            target_area_id="QN0103",
+            target_area_name="Astoria (Central)",
+        )
+    )
+
+    assert update["intent"] == "neighborhood.crime_query"
+    assert update["target_area_id"] == "MN0101"
+    assert update["target_area_name"] == "Financial District-Battery Park City"
+
+
+def test_understand_explicit_lic_overrides_existing_area(monkeypatch):
+    from app.nodes import understand as understand_mod
+    from app.nodes.understand import understand
+    from app.state import OrchestratorState
+
+    monkeypatch.setattr(understand_mod.settings, "openai_api_key", "")
+
+    update = understand(
+        OrchestratorState(
+            current_user_message="Long Island City 的安全情况怎么样？",
+            target_area_id="QN0103",
+            target_area_name="Astoria (Central)",
+        )
+    )
+
+    assert update["intent"] == "neighborhood.crime_query"
+    assert update["target_area_id"] == "QN0201"
+    assert update["target_area_name"] == "Long Island City-Hunters Point"
+
+
 def test_understand_ambiguous_area_answer_reuses_pending_intent(monkeypatch):
     from app.nodes import understand as understand_mod
     from app.nodes.understand import understand
